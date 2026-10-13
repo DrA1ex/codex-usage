@@ -1,13 +1,17 @@
 # Codex Usage
 
-See where your Codex tokens go, track quota usage, and explore how much work fits into an observed quota window. Codex Usage turns session history on your computer into an interactive dashboard and standalone offline reports.
+Understand how many tokens actually fit into your Codex usage limits. Codex Usage analyzes local session history to measure observed five-hour and weekly quota capacity, compare models, and track how your usable budget changes over time.
 
-- Explore usage by day, hour, model, project, and session.
-- Inspect five-hour and weekly quotas, exhausted windows, and early resets.
-- Compare profiles and reasoning effort levels.
-- Drill into sessions to see response usage, context size, and nested agents.
-- Export CSV, JSON, or a self-contained HTML report.
-- Switch between light and dark themes. No API key or paid service is needed.
+- Measure tokens consumed before recorded quota exhaustion, using whole windows with observed starts.
+- Compare effective capacity across models and dates, with sample sizes and model breakdowns.
+- Investigate unexpected capacity changes, incomplete windows, and early resets.
+- Compare model usage, cached input, output, and reasoning effort.
+- Explore usage by day, hour, project, and session, and export reproducible offline reports.
+- Keep your analysis local. No API key or paid reporting service is needed.
+
+<img width="900" alt="Observed five-hour quota capacity by model" src="https://github.com/user-attachments/assets/c64a830b-dffd-412c-a07e-4577ac5e16c2" />
+
+*All screenshots use synthetic example data with real model names.*
 
 ## Safety and privacy notice
 
@@ -50,43 +54,54 @@ On Windows, activate the environment with `.venv\Scripts\activate`. Installed us
 
 Compressed `.jsonl.gz` files work with the standard library. For `.jsonl.zst`, use Python 3.14+ with built-in Zstandard support, install `python -m pip install -e '.[zstd]'`, or have the `zstd` command on your `PATH`.
 
+## Check your effective quota capacity
+
+1. Open **Quotas** and choose the five-hour or weekly counter.
+2. Select **100%** for a strict sample of windows with recorded exhaustion. The default **98%** also includes nearly exhausted windows.
+3. Review the average tokens per window, the number of observations, and the model breakdown. Use the trend to compare dates under the same settings.
+4. Switch to the other quota duration to see its own recorded windows. Use **Models** to compare total consumption, cache use, output, and reasoning effort.
+
+This helps answer questions such as “Has my effective five-hour budget changed?”, “How much work fits into the weekly limit?”, and “How does my model choice affect the tokens I get through before exhaustion?” The local record lets you check whether observed usage matches your expectations and investigate unexpected quota behavior.
+
+Quota logs provide usage percentages and reset times, rather than OpenAI's absolute quota configuration or a promised token allowance. These reports measure **observed capacity under your workload**. Model mix, cache use, voice, images, and activity on other devices can affect the result; compare the same filters and enough complete windows.
+
 ## Explore your usage
 
 ### Overview
 
 Check current quotas, estimated remaining tokens, period comparisons, model usage, token composition, and your activity heatmap. Click a chart bar to open that period, or a model to filter the dashboard.
 
-> Screenshot placeholder: `codex-usage-01-overview-light.jpg` — overview with quota meters, usage history, and model breakdown. Use synthetic data.
+<img width="900" alt="Model shares and token composition" src="https://github.com/user-attachments/assets/8d225403-f48c-4fb7-a8d4-20c6be5143b7" />
 
 ### Quotas
 
 See recorded usage percentages, tokens consumed in each quota window, capacity trends, and early resets. Click a window to inspect its model breakdown. Choose a 100% threshold for a strict exhaustion sample, or 98% to include nearly exhausted windows.
 
-> Screenshot placeholder: `codex-usage-02-quota-analysis.jpg` — quota timeline and individual windows with the exhaustion threshold visible.
+<img width="900" alt="Observed weekly quota capacity" src="https://github.com/user-attachments/assets/8da3e38c-a82a-4ea3-91ef-a21954980926" />
 
 ### Models
 
 Compare token consumption, cache shares, average input and output per response, and reasoning effort. Model shares over time show how your mix changes. Model names are discovered from logs; there is no fixed model registry or price table.
 
-> Screenshot placeholder: `codex-usage-03-models-dark.jpg` — model comparison and usage shares in dark theme.
+<img width="900" alt="Model usage comparison and shares over time" src="https://github.com/user-attachments/assets/21fe2e86-2e55-41c9-aafb-570526f61e03" />
 
 ### Sessions and projects
 
 Search sessions by title, directory, branch, or ID. Open a session to inspect usage per response, context usage, and child agents. Projects group sessions by working directory; Codex worktrees are grouped with their main project.
 
-> Screenshot placeholder: `codex-usage-04-session-detail.jpg` — synthetic session drawer with response and context charts.
+<img width="720" alt="Session response usage and context growth" src="https://github.com/user-attachments/assets/325e1bf4-1385-468f-b89e-11934d9a9dd9" />
 
-> Screenshot placeholder: `codex-usage-05-projects.jpg` — usage across fictional projects.
+<img width="900" alt="Token usage by project" src="https://github.com/user-attachments/assets/0cf9533e-ad54-4d9b-858a-61f9e7daa3da" />
 
 ### Profiles, commands, and data
 
 **Profiles** lets you scan, rename, add, and compare accounts. Refresh reads only new and changed session files; a full rescan ignores the cache. Removing a custom profile from the list leaves its files intact.
 
-> Screenshot placeholder: `codex-usage-06-profiles.jpg` — two fictional profiles with comparison charts.
+<img width="900" alt="Usage comparison for Personal and Work example profiles" src="https://github.com/user-attachments/assets/0f78c259-07bc-4bbb-bbba-42fd43abb27d" />
 
 **Commands** builds offline reports, shows the equivalent CLI command, displays background job logs, and exports the current dataset. **Data** explains parser diagnostics, skipped files, and analysis settings.
 
-Date, model, metric, timezone, and internal-reviewer filters apply across the dashboard and are remembered locally.
+Date, model, metric, timezone, and internal-reviewer filters apply across the dashboard and are remembered locally. Dates, times, and numbers follow your browser's language and regional preferences. The timezone defaults to **Auto**, using your browser's timezone on each visit; select another timezone to save a manual override. The active timezone controls which day or hour an event belongs to and is passed to reports created through **Commands**. Standalone reports retain the timezone chosen when they were generated.
 
 ## Create an offline report
 
@@ -119,8 +134,6 @@ python3 generate.py --codex-home ~/.codex-work --timezone UTC \
 ```
 
 Inside the HTML report, you can change the analysis mode, metric, grouping period, model, dates, quota counter, and exhaustion threshold. Run the generator again to add new history or expand the original date range.
-
-> Screenshot placeholder: `codex-usage-07-offline-report.jpg` — standalone report with capacity trends and CSV export.
 
 ## Understanding the numbers
 
@@ -168,7 +181,7 @@ Set `--export-dir` to choose another export directory. Both the dashboard and th
 python3 scripts/demo.py --open
 ```
 
-This starts an isolated dashboard with two fictional profiles, projects, and sessions. It never discovers or scans your real profiles. All generated data and demo reports live under `demo-data/`, which is ignored by Git. Use it to explore the UI or prepare screenshots without exposing personal history.
+This starts an isolated dashboard with Personal and Work example profiles. It uses real model identifiers, realistic project and task names, and generated usage patterns; counters and account details are synthetic. It never discovers or scans your real profiles. All generated data and demo reports live under `demo-data/`, which is ignored by Git. Use it to explore the UI or prepare screenshots without exposing personal history.
 
 ## Troubleshooting
 
