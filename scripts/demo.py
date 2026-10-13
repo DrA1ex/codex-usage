@@ -28,53 +28,67 @@ from codex_usage.settings import METRICS
 from codex_usage.webdata import build_dataset, daily_totals, quota_now
 
 
-def synthetic_history(now: float, seed: int = 7) -> History:
+def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
     rng = random.Random(seed)
     history = History()
-    projects = ["atlas-dashboard", "orbit-search", "canvas-studio", "signal-api", "lumen-docs"]
-    titles = ["Build the analytics dashboard", "Refactor the search index", "Add keyboard navigation",
-              "Optimize image processing", "Write integration tests", "Polish the settings screen",
-              "Review accessibility"]
-    models = ["demo-coder", "demo-reasoner", "demo-fast"]
+    projects = ["web-app", "api-service", "documentation", "cli-tool", "design-system"]
+    titles = {
+        "web-app": ["Add dashboard filters", "Improve keyboard navigation", "Fix responsive layout"],
+        "api-service": ["Add pagination to API", "Optimize database queries", "Write endpoint tests"],
+        "documentation": ["Update installation guide", "Document configuration options", "Review API examples"],
+        "cli-tool": ["Add CSV export", "Handle invalid arguments", "Improve progress output"],
+        "design-system": ["Build form components", "Polish dark theme", "Check accessibility"],
+    }
+    models = ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"]
+    scale = 1 if seed == 7 else .55
     midnight = dt.datetime.fromtimestamp(now, dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     starts = []
     for day in range(35):
-        for slot in range(1 + (day % 3 != 0)):
-            starts.append(midnight - (35 - day) * 86400 + (9 + slot * 6) * 3600)
+        date = midnight - (35 - day) * 86400
+        if dt.datetime.fromtimestamp(date, dt.timezone.utc).weekday() >= 5 and rng.random() < .65:
+            continue
+        slots = rng.choices([1, 2, 3], weights=[.5, .45, .05])[0]
+        for slot in range(slots):
+            starts.append(date + (9 + slot * 5) * 3600 + rng.choice([0, 900, 1800]))
     starts.append(now - 7200)
     weekly_base = midnight - 35 * 86400
     for i, start in enumerate(starts):
-        model = models[(i + seed) % len(models)]
+        model = rng.choices(models, weights=[.6, .25, .15])[0]
         sid = f"demo-{seed:02d}-session-{i:03d}"
         cwd = f"/home/demo/projects/{projects[i % len(projects)]}"
         history.sessions[sid] = {"id": sid, "cwd": cwd, "originator": "demo-client", "cli_version": "demo",
                                  "source": "cli" if i % 4 == 0 else "vscode", "parent": None,
-                                 "branch": "feature/demo-dashboard", "started": start,
+                                 "branch": "feature/" + projects[i % len(projects)]+"-update", "started": start,
                                  "file": f"/home/demo/.codex-demo/sessions/rollout-{sid}.jsonl"}
-        history.thread_names[sid] = titles[i % len(titles)]
-        peak = 68 if i == len(starts) - 1 else [100, 100, 99, 100, 76, 100][i % 6]
+        history.thread_names[sid] = rng.choice(titles[projects[i % len(projects)]])
+        peak = (68 if seed == 7 else 41) if i == len(starts) - 1 else rng.choice([100, 100, 99, 100, 98, 76, 63, 100])
         window_span = 6600 if i == len(starts) - 1 else rng.randint(6000, 15500)
         reset = start + 18000
-        for step in range(25):
-            ts = start + window_span * step / 24
-            inp = int((45000 + step * 7500) * (1.1 if model == "demo-reasoner" else .8 if model == "demo-fast" else 1) * rng.uniform(.8, 1.2))
-            out = rng.randint(1800, 6500)
+        effort_weights = [.1, .85, .05] if model == "gpt-6-astra" else [.65, .1, .25] if model == "gpt-6-luna" else [.35, .55, .1]
+        effort = rng.choices(["medium", "high", "low"], weights=effort_weights)[0]
+        reasoning_share = {"high": .8, "medium": .45, "low": .15}[effort]
+        steps = rng.randint(60, 160)
+        for step in range(steps):
+            progress = step / (steps - 1)
+            ts = start + window_span * progress
+            inp = int((45000 + progress * 180000) * (1.1 if model == "gpt-6-astra" else .8 if model == "gpt-6-luna" else 1) * scale * rng.uniform(.8, 1.2))
+            out = int(rng.randint(1800, 6500) * scale)
             cached = int(inp * rng.uniform(.62, .91))
             history.events.append({"ts": ts, "model": model, "session": sid, "internal": False,
-                                   "effort": ["medium", "high", "low"][(i + seed) % 3], "context": inp,
+                                   "effort": effort, "context": inp,
                                    "context_window": 524288, "file": "synthetic.jsonl", "line": step + 1,
                                    "counts": {"input_tokens": inp, "output_tokens": out, "total_tokens": inp + out,
                                               "cached_input_tokens": cached, "uncached_input_tokens": inp - cached,
-                                              "reasoning_output_tokens": int(out * .55), "responses": 1}})
+                                              "reasoning_output_tokens": int(out * reasoning_share), "responses": 1}})
             history.snapshots.append({"ts": ts, "model": model, "internal": False, "limit_id": "codex",
-                                      "minutes": 300, "reset": reset, "used": round(peak * step / 24, 1),
-                                      "plan": "Demo", "file": "synthetic.jsonl", "line": step + 1})
+                                      "minutes": 300, "reset": reset, "used": round(peak * progress, 1),
+                                      "plan": plan, "file": "synthetic.jsonl", "line": step + 1})
             week = int((ts - weekly_base) // (7 * 86400))
             week_start = weekly_base + week * 7 * 86400
             used = min(100, max(0, (ts - week_start - 9 * 3600) / (6 * 86400) * 100))
             history.snapshots.append({"ts": ts, "model": model, "internal": False, "limit_id": "codex",
                                       "minutes": 10080, "reset": week_start + 7 * 86400, "used": round(used, 1),
-                                      "plan": "Demo", "file": "synthetic.jsonl", "line": step + 1})
+                                      "plan": plan, "file": "synthetic.jsonl", "line": step + 1})
         if i % 5 == 0:
             child = sid + "-agent"
             history.sessions[child] = {**history.sessions[sid], "id": child, "source": "subagent", "parent": sid,
@@ -98,13 +112,13 @@ def build(output: Path) -> Path:
     output.mkdir(parents=True, exist_ok=True)
     profiles, datasets, comparisons = [], {}, []
     histories = []
-    for seed, label, name in [(7, "Studio · demo", ".codex-studio"), (19, "Lab · demo", ".codex-lab")]:
-        history = synthetic_history(now, seed)
+    for seed, label, name, plan in [(7, "Personal (demo)", ".codex", "Pro"), (19, "Work (demo)", ".codex-work", "Plus")]:
+        history = synthetic_history(now, seed, plan)
         histories.append(history)
         profile = {"path": f"/home/demo/{name}", "name": name, "label": label, "valid": True,
                    "exists": True, "custom": False, "files": history.files, "size": len(history.events) * 720,
                    "modified": now - 300, "scanned_at": now, "events": len(history.events),
-                   "sessions": len(history.sessions), "stale": False, "quota_now": quota_now(history), "plans": ["Demo"]}
+                   "sessions": len(history.sessions), "stale": False, "quota_now": quota_now(history), "plans": [plan]}
         profiles.append(profile)
         datasets[profile["path"]] = build_dataset(history, profile)
         comparisons.append({**profile, "daily": daily_totals(history, "UTC")})
@@ -138,7 +152,7 @@ export const api = {
     throw new Error('This synthetic demo does not access files or a real profile.');
   },
   async post(raw, data) {
-    if (raw === '/api/preview-command') return {command: 'python3 generate.py --codex-home /home/demo/.codex-studio --days 30 --open'};
+    if (raw === '/api/preview-command') return {command: 'python3 generate.py --codex-home /home/demo/.codex --days 30 --open'};
     throw new Error('Read-only synthetic demo. Use the regular app for this action.');
   },
 };
@@ -164,7 +178,7 @@ export const api = {
                         '<script type="module">import "demo/app";</script>')
     target = output / "showcase.html"
     target.write_text(html)
-    options = {**DEFAULTS, "codex_home": "/home/demo/.codex-studio", "profile_name": "Synthetic demo",
+    options = {**DEFAULTS, "codex_home": "/home/demo/.codex", "profile_name": "Synthetic demo",
                "start_ts": now - 30 * 86400, "end_ts": now, "start_arg": dt.datetime.fromtimestamp(now - 30 * 86400, dt.timezone.utc).date().isoformat(),
                "end_arg": dt.datetime.fromtimestamp(now, dt.timezone.utc).date().isoformat(),
                "period_seconds": 259200, "quota_minutes": 300}

@@ -82,9 +82,9 @@ class DemoTests(unittest.TestCase):
         history = demo.synthetic_history(1770000000, seed=7)
         windows, _ = build_windows(history)
         self.assertTrue(any(w['full'] and not w['exclusion'] for w in windows))
-        self.assertGreater(len(history.sessions), 50)
+        self.assertGreater(len(history.sessions), 30)
         self.assertTrue(all(s['cwd'].startswith('/home/demo/projects/') for s in history.sessions.values()))
-        self.assertTrue(all(e['model'].startswith('demo-') for e in history.events))
+        self.assertEqual({e['model'] for e in history.events}, {'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'})
 
     def test_demo_build_never_discovers_real_profiles_or_sends_requests(self):
         with tempfile.TemporaryDirectory() as folder:
