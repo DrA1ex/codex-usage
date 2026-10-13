@@ -1,10 +1,11 @@
 // Analysis pages: overview, quota windows, models, sessions, projects.
-import {h, fill, num, compact, pct, share, duration, ago, quotaName, minutesLabel, median, projectName, projectKey, shortPath, plural} from './util.js';
+import {locales, h, fill, num, compact, pct, share, duration, ago, quotaName, minutesLabel, median, projectName, projectKey, shortPath, plural} from './util.js';
 import {columns, lines, quotaChart, timeColumns, heatmap, barList, composition, legend, hideTip} from './charts.js';
 import {ctx, state, saveState, view, sum, byModel, sessionStats, projectStats, granularity, bucketer, buckets, granLabels,
   card, tile, chartBox, segmented, table, color, modelName, modelDot, metricLabel, metricUnit, sourceNames, sessionKind, info, select} from './core.js';
 
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const weekdayFormat = new Intl.DateTimeFormat(locales, {weekday: 'short', timeZone: 'UTC'});
+const WEEKDAYS = Array.from({length: 7}, (_, day) => weekdayFormat.format(new Date(Date.UTC(2024, 0, 1 + day))));
 const fmtMetric = v => state.metric === 'responses' ? num(v) : compact(v);
 
 function grow(...children) { return h('div', {class: 'grid'}, children); }

@@ -1,4 +1,4 @@
-import {h, $, num, ago, debounce, fill} from './util.js';
+import {locales, resolveTimezone, h, $, num, ago, debounce, fill} from './util.js';
 import {hideTip} from './charts.js';
 import {ctx, state, saveState, api, prepare, newClock, invalidate, resolveRange, color, toast, card, segmented, select} from './core.js';
 import {overview, quota, modelsPage, sessions, projectsPage} from './pages.js';
@@ -54,7 +54,7 @@ function renderHeader() {
   const valid = ctx.profiles.filter(p => p.valid);
   const current = ctx.profiles.find(p => p.path === state.profile);
   const status = scanJob ? h('span', {class: 'status warn'}, h('i', {class: 'spinner'}), scanJob.last || 'Scanning…')
-    : ctx.D ? h('span', {class: 'status', title: `Scanned ${new Date(ctx.D.profile.scanned_at * 1000).toLocaleString('en-US')}`}, `updated ${ago(ctx.D.profile.scanned_at)}`) : null;
+    : ctx.D ? h('span', {class: 'status', title: `Scanned ${new Date(ctx.D.profile.scanned_at * 1000).toLocaleString(locales, {timeZone: state.tz})}`}, `updated ${ago(ctx.D.profile.scanned_at)}`) : null;
   const auto = h('label', {class: 'check small', title: 'Read new records every two minutes to track quota usage'},
     h('input', {type: 'checkbox', checked: !!state.auto, onchange: e => { state.auto = e.target.checked; saveState(); setupAuto(); }}), 'auto-refresh');
   const top = h('div', {class: 'head-row'},
@@ -88,7 +88,10 @@ function filters() {
   const metric = select(D.metric_keys.map(k => [k, D.metric_labels[k]]), state.metric, v => { state.metric = v; saveState(); render(); }, {'aria-label': 'Metric'});
   const zones = (Intl.supportedValuesOf?.('timeZone') || [state.tz]);
   if (!zones.includes(state.tz)) zones.unshift(state.tz);
-  const tz = select(zones.map(z => [z, z]), state.tz, v => { state.tz = v; saveState(); ctx.clock = newClock(v); invalidate(); render(); }, {'aria-label': 'Timezone', class: 'tz'});
+  const tz = select([['auto', `Auto (${resolveTimezone()})`], ...zones.map(z => [z, z])], state.tzPreference, v => {
+    state.tzPreference = v; state.tz = resolveTimezone(v); ctx.clock = newClock(state.tz);
+    saveState(); invalidate(); render();
+  }, {'aria-label': 'Timezone', class: 'tz'});
   const internal = h('label', {class: 'check small', title: 'Internal auto-reviewer. Its subscription quota impact is not established by the logs.'},
     h('input', {type: 'checkbox', checked: state.internal, onchange: e => { state.internal = e.target.checked; saveState(); invalidate(); render(); }}), 'internal');
   return h('div', {class: 'filters'},
@@ -201,8 +204,12 @@ async function boot() {
     fill($('#content'), card('Server unavailable', {}, h('p', {}, e.message)));
     return;
   }
-  state.tz = state.tz || ctx.meta.timezone;
-  try { ctx.clock = newClock(state.tz); } catch { state.tz = 'UTC'; ctx.clock = newClock('UTC'); }
+  // Old saved tz values came from the server default; only explicit preferences override the browser.
+  if (state.tzPreference !== 'auto') {
+    try { newClock(state.tzPreference); } catch { state.tzPreference = 'auto'; }
+  }
+  state.tz = resolveTimezone(state.tzPreference);
+  ctx.clock = newClock(state.tz);
   ctx.profiles = (await api.get('/api/profiles')).profiles;
   const valid = ctx.profiles.filter(p => p.valid);
   if (!valid.some(p => p.path === state.profile)) {

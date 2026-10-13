@@ -28,6 +28,12 @@ The optional `tests/browser_smoke.mjs` script validates a generated standalone r
 node tests/browser_smoke.mjs "$BROWSER_ENDPOINT" reports/demo.html
 ```
 
+Check browser locale formatting, automatic and manual timezones, and daylight-saving calendar arithmetic with Node.js:
+
+```sh
+node tests/test_locale.mjs
+```
+
 Check the browser modules with Node.js, if available:
 
 ```sh

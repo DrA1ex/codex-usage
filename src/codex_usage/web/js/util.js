@@ -1,6 +1,16 @@
 // DOM helpers, number formatting and timezone-aware date math.
 // All untrusted strings (model names, thread titles, paths) go through text nodes.
 
+export const locales = navigator.languages?.length ? [...navigator.languages] : navigator.language || undefined;
+
+export function resolveTimezone(preference = 'auto') {
+  if (preference && preference !== 'auto') {
+    try { return new Intl.DateTimeFormat(undefined, {timeZone: preference}).resolvedOptions().timeZone; }
+    catch { /* Fall back to the browser for an invalid saved timezone. */ }
+  }
+  return new Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -39,7 +49,7 @@ export function s(tag, attrs, ...children) {
 // ---------- numbers ----------
 const nf = new Map();
 function numberFormat(digits) {
-  if (!nf.has(digits)) nf.set(digits, new Intl.NumberFormat('en-US', {maximumFractionDigits: digits, minimumFractionDigits: 0}));
+  if (!nf.has(digits)) nf.set(digits, new Intl.NumberFormat(locales, {maximumFractionDigits: digits, minimumFractionDigits: 0}));
   return nf.get(digits);
 }
 export const num = (v, digits = 0) => numberFormat(digits).format(v || 0);
@@ -100,16 +110,17 @@ export function quotaName(minutes) {
 export class Clock {
   constructor(tz) {
     this.tz = tz;
+    // Use a stable numeric locale for calendar math, independently of display preferences.
     this.parts = new Intl.DateTimeFormat('en-CA', {timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'});
     this.cache = new Map();
     const base = {timeZone: tz};
-    this.fDate = new Intl.DateTimeFormat('en-US', {...base, day: 'numeric', month: 'short'});
-    this.fDateY = new Intl.DateTimeFormat('en-US', {...base, day: 'numeric', month: 'short', year: 'numeric'});
-    this.fDateTime = new Intl.DateTimeFormat('en-US', {...base, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'});
-    this.fTime = new Intl.DateTimeFormat('en-US', {...base, hour: '2-digit', minute: '2-digit'});
-    this.fMonth = new Intl.DateTimeFormat('en-US', {...base, month: 'long', year: 'numeric'});
-    this.fWeekday = new Intl.DateTimeFormat('en-US', {...base, weekday: 'short', day: 'numeric', month: 'short'});
+    this.fDate = new Intl.DateTimeFormat(locales, {...base, day: 'numeric', month: 'short'});
+    this.fDateY = new Intl.DateTimeFormat(locales, {...base, day: 'numeric', month: 'short', year: 'numeric'});
+    this.fDateTime = new Intl.DateTimeFormat(locales, {...base, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'});
+    this.fTime = new Intl.DateTimeFormat(locales, {...base, hour: '2-digit', minute: '2-digit'});
+    this.fMonth = new Intl.DateTimeFormat(locales, {...base, month: 'long', year: 'numeric'});
+    this.fWeekday = new Intl.DateTimeFormat(locales, {...base, weekday: 'short', day: 'numeric', month: 'short'});
   }
   offset(ts) {
     const key = Math.floor(ts / 3600);

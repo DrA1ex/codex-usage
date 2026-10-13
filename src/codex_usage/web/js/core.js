@@ -1,5 +1,5 @@
 // Shared state, API access, filtering/aggregation and UI building blocks.
-import {h, fill, num, compact, csv, download, store, Clock, projectName, projectKey} from './util.js';
+import {locales, h, fill, num, compact, csv, download, store, Clock, projectName, projectKey} from './util.js';
 
 // ---------- API ----------
 export const api = {
@@ -19,7 +19,7 @@ export const api = {
 
 // ---------- state ----------
 const defaults = {
-  profile: null, range: {preset: '30d', from: null, to: null}, tz: null, metric: 'total_tokens',
+  profile: null, range: {preset: '30d', from: null, to: null}, tz: null, tzPreference: 'auto', metric: 'total_tokens',
   models: [], internal: false, gran: 'auto', theme: 'auto',
   quota: {key: null, threshold: 98, period: 3},
   analysis: {tolerance: 180, start_used_max: 2, dominance: .95, exclude: []},
@@ -230,7 +230,7 @@ export function table({columns, rows, sortKey, sortDir = -1, pageSize = 50, csvN
     const sorted = col ? [...rows].sort((p, q) => {
       const a = (col.sort || col.value)(p), b = (col.sort || col.value)(q);
       if (a == null && b == null) return 0; if (a == null) return 1; if (b == null) return -1;
-      return (typeof a === 'string' ? a.localeCompare(b, 'en') : a - b) * dir;
+      return (typeof a === 'string' ? a.localeCompare(b, locales) : a - b) * dir;
     }) : rows;
     const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
     page = Math.min(page, pages - 1);
