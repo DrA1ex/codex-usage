@@ -1,0 +1,14 @@
+{
+  "codex_home": "~/.codex",
+  "timezone": "UTC",
+  "period": "3d",
+  "quota_window": "5h",
+  "mode": "capacity",
+  "metric": "total_tokens",
+  "min_used": 98,
+  "start_used_max": 2,
+  "dominance": 0.95,
+  "limit_id": "auto",
+  "include_internal": false,
+  "reset_tolerance_seconds": 180
+}
