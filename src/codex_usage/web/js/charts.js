@@ -537,3 +537,33 @@ export function trajectories(el, {series, focus, fmt = compact, height = 300, yM
   if (onClick) hit.addEventListener('click', ev => { const {sr} = nearest(ev); if (sr) onClick(sr); });
   svg.append(hit);
 }
+
+// ---------- compact ranked list: name + value on one line, a hairline bar under it ----------
+// items: [{label, sub, value, color, title, key}]
+export function rankList(el, items, {fmt = compact, max: maxItems = 5, total, empty = 'No data', onClick} = {}) {
+  if (!items.length) { fill(el, h('div', {class: 'empty'}, empty)); return; }
+  const shown = items.slice(0, maxItems), top = Math.max(...shown.map(i => i.value)) || 1;
+  const all = total ?? items.reduce((n, i) => n + i.value, 0);
+  fill(el, h('div', {class: 'rank'}, shown.map(it => h(onClick ? 'button' : 'div', {
+      class: ['rank-row', onClick && 'clickable'], type: onClick ? 'button' : null, title: it.title || null, onclick: onClick ? () => onClick(it) : null},
+    h('div', {class: 'rank-line'},
+      it.color ? h('i', {class: 'swatch', style: {background: it.color}}) : null,
+      h('span', {class: 'rank-name'}, it.label, it.sub ? h('span', {class: 'rank-sub'}, it.sub) : null),
+      h('span', {class: 'rank-value'}, h('b', {}, fmt(it.value)), all ? h('span', {}, num(100 * it.value / all) + '%') : null)),
+    h('div', {class: 'rank-bar'}, h('i', {style: {width: Math.max(1, 100 * it.value / top) + '%', background: it.color || 'var(--ink)'}}))))),
+  items.length > maxItems ? h('div', {class: 'rank-more'}, `+ ${items.length - maxItems} more`) : null);
+}
+
+// ---------- tiny HTML column profile (e.g. hours of the day) ----------
+// labels: tick text per column ('' to hide); hot: index highlighted (e.g. the current hour).
+export function miniColumns(el, {values, labels, titles = labels, fmt = compact, unit = 'tokens', hot = -1, height = 64}) {
+  const max = Math.max(...values) || 1;
+  fill(el, h('div', {class: 'minicols', style: {'--h': height + 'px'}},
+    h('div', {class: 'minicols-bars'}, values.map((v, i) => {
+      const col = h('div', {class: ['minicol', i === hot && 'hot']}, h('i', {style: {height: Math.max(v ? 3 : 1, 100 * v / max) + '%'}}));
+      col.addEventListener('pointermove', ev => showTip(ev, titles[i], [{label: unit, value: fmt(v)}, {label: 'share', value: num(100 * v / (values.reduce((a, b) => a + b, 0) || 1), 1) + '%'}]));
+      col.addEventListener('pointerleave', hideTip);
+      return col;
+    })),
+    h('div', {class: 'minicols-ticks'}, labels.map(t => h('span', {}, t)))));
+}

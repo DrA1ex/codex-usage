@@ -585,9 +585,10 @@ export function anatomy() {
 }
 
 // ======================================================================
-// Launchers shown on the overview
+// Signals shown on the overview
 // ======================================================================
-export function focusStrip() {
+// One line of signal per focus page, shown as a list on the overview.
+export function signals() {
   const D = ctx.D, c = ctx.clock, mi = D.mi[state.metric], now = Date.now() / 1000;
   const wk = period('week', periodStart('week', c.today())), prevWk = period('week', wk.startDay - 7);
   const tw = sum(eventsBetween(wk.a, now), mi), lw = sum(eventsBetween(prevWk.a, prevWk.a + (now - wk.a)), mi);
@@ -608,8 +609,8 @@ export function focusStrip() {
     {page: 'anatomy', i: 2, title: 'Break down the spend', line: `${share(big, sum(v.events, D.mi.total_tokens), 0)} of tokens at ≥ 128K context`},
     {page: 'context', i: 16, title: 'Trace context growth', line: contextLine()},
   ];
-  return h('div', {class: 'launchers'}, items.map(it => h('a', {class: 'launcher', href: '#/' + it.page},
-    h('span', {class: 'launcher-icon'}, icon(it.i)),
-    h('div', {class: 'launcher-body'}, h('div', {class: 'launcher-title'}, it.title), h('div', {class: 'launcher-line'}, it.line)),
+  return h('div', {class: 'signals'}, items.map(it => h('a', {class: 'signal', href: '#/' + it.page},
+    h('span', {class: 'signal-icon'}, icon(it.i)),
+    h('div', {class: 'signal-body'}, h('div', {class: 'signal-title'}, it.title), h('div', {class: 'signal-line'}, it.line)),
     icon(15))));
 }

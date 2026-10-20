@@ -345,7 +345,8 @@ export function tile(label, value, note, opts = {}) {
     h('div', {class: 'tile-label'}, label),
     h('div', {class: 'tile-value'}, splitUnit(value)),
     opts.delta != null ? delta(opts.delta, opts.deltaNote) : null,
-    note ? h('div', {class: 'tile-note'}, note) : null);
+    note ? h('div', {class: 'tile-note'}, note) : null,
+    opts.spark ? h('div', {class: 'tile-spark'}, opts.spark) : null);
 }
 
 export function delta(change, note) {

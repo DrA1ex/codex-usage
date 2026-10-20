@@ -1,9 +1,10 @@
 // Analysis pages: overview, quota windows, models, sessions, projects.
 import {locales, h, fill, num, compact, pct, share, duration, ago, quotaName, minutesLabel, median, projectName, projectKey, shortPath, plural} from './util.js';
-import {columns, lines, quotaChart, timeColumns, heatmap, barList, composition, legend, hideTip} from './charts.js';
+import {columns, lines, quotaChart, timeColumns, barList, composition, legend, hideTip, rankList, miniColumns, sparkline} from './charts.js';
 import {ctx, state, saveState, view, sum, byModel, sessionStats, projectStats, granularity, bucketer, buckets, granLabels,
-  card, tile, chartBox, segmented, table, color, modelName, modelDot, metricLabel, metricUnit, sourceNames, sessionKind, info, select, quotaForecast} from './core.js';
-import {focusStrip} from './focus.js';
+  card, tile, chartBox, segmented, table, color, modelName, modelDot, metricLabel, metricUnit, sourceNames, sessionKind, info, select, quotaForecast,
+  eventsBetween, period, periodStart, quotaBurn} from './core.js';
+import {signals} from './focus.js';
 
 const weekdayFormat = new Intl.DateTimeFormat(locales, {weekday: 'short', timeZone: 'UTC'});
 const WEEKDAYS = Array.from({length: 7}, (_, day) => weekdayFormat.format(new Date(Date.UTC(2024, 0, 1 + day))));
@@ -41,67 +42,109 @@ function recentPerPercent(minutes, days = 30) {
   return {value: median(values), n: values.length};
 }
 
-export function quotaMeters({compactView = false} = {}) {
+// Live quota counters: one compact card each, with the pace forecast in one line.
+function quotaCards() {
   const D = ctx.D, now = Date.now() / 1000, c = ctx.clock;
-  if (!D.quota_now.length) return h('div', {class: 'empty'}, 'No quota data in history');
-  return h('div', {class: ['meters', compactView && 'compact']}, D.quota_now.map(q => {
+  return D.quota_now.map(q => {
     const expired = q.reset <= now, used = expired ? 0 : q.used;
     const level = used >= 90 ? 'critical' : used >= 70 ? 'warning' : 'good';
+    const f = !expired ? quotaForecast(D.quota_series[`${q.limit_id}|${q.minutes}`] || [], q, {now}) : null;
     const est = recentPerPercent(q.minutes);
     const left = est.n >= 3 && !expired ? est.value * (100 - used) : null;
-    const f = !compactView && !expired ? quotaForecast(D.quota_series[`${q.limit_id}|${q.minutes}`] || [], q, {now}) : null;
-    return h('div', {class: ['meter-card', level]},
-      h('div', {class: 'meter-top'}, h('span', {class: 'meter-name'}, quotaName(q.minutes)),
-        q.limit_id !== 'codex' ? h('span', {class: 'pill'}, q.limit_id) : null,
-        q.plan ? h('span', {class: 'pill'}, q.plan) : null),
-      h('div', {class: 'meter-value'}, h('b', {}, num(used) + '%'), h('span', {class: 'muted'}, ' used')),
-      h('div', {class: 'meter', role: 'meter', 'aria-valuenow': used, 'aria-valuemin': 0, 'aria-valuemax': 100},
+    const why = 'Pace = growth of this counter over the last hour (five-hour quota) or day (longer quotas), idle time included, extended in a straight line.';
+    let line = null;
+    if (expired) line = h('span', {class: 'chip ok'}, 'restored');
+    else if (used >= 100) line = h('span', {class: 'chip bad'}, 'at the limit');
+    else if (f.rate < .05) line = [h('span', {class: 'chip'}, 'idle'), ' no recent growth'];
+    else if (f.hitsFirst) line = [h('span', {class: 'chip bad'}, 'limit first'), ' 100% in ', h('b', {}, duration(f.hitAt - now))];
+    else line = [h('span', {class: 'chip ok'}, 'reset first'), ' ≈ ', h('b', {}, num(f.atReset) + '%'), ' at the reset'];
+    return h('a', {class: ['now-card', level], href: '#/quota', title: `Data as of ${c.dateTime(q.ts)} (${ago(q.ts)})`},
+      h('div', {class: 'now-label'}, quotaName(q.minutes), f && f.rate >= .05 ? info(`${why} Current pace: +${num(f.rate, 1)}%/h.`) : null, q.limit_id !== 'codex' ? h('span', {class: 'pill'}, q.limit_id) : null, q.plan ? h('span', {class: 'pill'}, q.plan) : null),
+      h('div', {class: 'now-value'}, h('b', {}, num(used)), h('span', {class: 'unit'}, '%'), h('span', {class: 'now-aside'}, expired ? 'window ended' : `resets in ${duration(q.reset - now)}`)),
+      h('div', {class: ['meter', level]},
         h('div', {class: 'meter-fill', style: {width: Math.min(100, used) + '%'}}),
-        f && f.atReset > used + .5 ? h('div', {class: 'meter-proj', style: {left: Math.min(100, used) + '%', width: (f.atReset - Math.min(100, used)) + '%'}, title: `Projected by the reset: ${num(f.atReset)}%`}) : null),
-      h('div', {class: 'meter-note'}, expired
-        ? `Window ended ${c.dateTime(q.reset)} — quota restored`
-        : `Resets in ${duration(q.reset - now)} · ${c.dateTime(q.reset)}`),
-      f ? forecastNote(f, q, now) : null,
-      !compactView && left != null ? h('div', {class: 'meter-note'}, `≈ ${compact(left)} tokens until 100% at typical usage`, info(`Estimate: median tokens per 1% across ${est.n} windows over 30 days × remaining percentage. Depends on the model, cache and other features sharing the budget.`)) : null,
-      h('div', {class: 'meter-foot muted'}, `data as of ${c.dateTime(q.ts)} (${ago(q.ts)})`));
-  }));
+        f && f.atReset > used + .5 ? h('div', {class: 'meter-proj', style: {left: Math.min(100, used) + '%', width: (f.atReset - Math.min(100, used)) + '%'}}) : null),
+      h('div', {class: 'now-line'}, line),
+      h('div', {class: 'now-foot'}, f?.budgetPerDay != null && used < 100 ? `≤ ${num(f.budgetPerDay, 1)}% per day lasts to the reset` : left != null ? `≈ ${compact(left)} tokens left at typical usage` : `as of ${ago(q.ts)}`));
+  });
 }
 
-// Pace over the recent past of the current window, projected to the reset (see quotaForecast).
-function forecastNote(f, q, now) {
-  const pace = `+${num(f.rate, f.rate < 10 ? 1 : 0)}%/h (last ${duration(f.lookback)})`;
-  const why = 'Pace = growth of this counter over the last hour (five-hour quota) or day (longer quotas), idle time included, extended in a straight line. It assumes you keep working the way you did.';
-  const budget = f.budgetPerDay != null && q.used < 100 ? h('div', {class: 'meter-note'}, 'To last until the reset: ', h('b', {}, `≤ ${num(f.budgetPerDay, 1)}%`), ' per day') : null;
-  if (q.used >= 100) return null;
-  if (f.rate < .05) return [h('div', {class: 'meter-note forecast'}, h('span', {class: 'chip ok'}, 'idle'), ' No growth recently; the counter holds until the reset', info(why)), budget];
-  if (f.hitsFirst) {
-    const at = f.hitAt;
-    return [h('div', {class: 'meter-note forecast'}, h('span', {class: 'chip bad'}, 'limit first'),
-      ' 100% in ', h('b', {}, duration(at - now)), ` at ${pace}, `, h('b', {}, duration(q.reset - at)), ' before the reset', info(why)), budget];
-  }
-  return [h('div', {class: 'meter-note forecast'}, h('span', {class: 'chip ok'}, 'reset first'), ` ≈ ${num(f.atReset)}% by the reset at ${pace}`, info(why)), budget];
+// Today and this week, independent of the selected period (model/project filters still apply).
+function todayCard() {
+  const D = ctx.D, c = ctx.clock, mi = D.mi[state.metric], now = Date.now() / 1000, today = c.today();
+  const events = eventsBetween(c.dayStart(today), now), total = sum(events, mi);
+  const daily = new Map();
+  for (const e of eventsBetween(c.dayStart(today - 28), c.dayStart(today))) { const d = c.day(e[0]); daily.set(d, (daily.get(d) || 0) + (e[5][mi] || 0)); }
+  const typical = median([...daily.values()].filter(Boolean));
+  const hours = Array(24).fill(0);
+  for (const e of events) hours[c.hour(e[0])] += e[5][mi] || 0;
+  const sessions = new Set(events.filter(e => sessionKind(D.sessions[e[3]]) === 'main').map(e => e[3])).size;
+  const last = events[events.length - 1]?.[0];
+  return h('div', {class: 'now-card'},
+    h('div', {class: 'now-label'}, 'Today', h('span', {class: 'pill'}, c.date(now))),
+    h('div', {class: 'now-value'}, splitValue(fmtMetric(total)), h('span', {class: 'now-aside'}, typical ? `${num(100 * total / typical)}% of a typical day` : '')),
+    chartBox(el => miniColumns(el, {values: hours, labels: hours.map((_, i) => i % 6 ? '' : String(i).padStart(2, '0')), titles: hours.map((_, i) => `${String(i).padStart(2, '0')}:00`), fmt: fmtMetric, unit: metricUnit(state.metric), hot: c.hour(now), height: 34})),
+    h('div', {class: 'now-foot'}, `${num(sessions)} ${plural(sessions, 'session', 'sessions')}`, last ? ` · last response ${ago(last)}` : ' · no activity yet', typical ? ` · typical ${fmtMetric(typical)}` : ''));
+}
+
+function weekCard() {
+  const D = ctx.D, c = ctx.clock, mi = D.mi[state.metric], now = Date.now() / 1000;
+  const wk = period('week', periodStart('week', c.today())), prev = period('week', wk.startDay - 7);
+  const total = sum(eventsBetween(wk.a, now), mi), before = sum(eventsBetween(prev.a, prev.a + (now - wk.a)), mi), lastWeek = sum(eventsBetween(prev.a, prev.b), mi);
+  const days = Array.from({length: 7}, (_, i) => wk.startDay + i <= c.today() ? sum(eventsBetween(c.dayStart(wk.startDay + i), c.dayStart(wk.startDay + i + 1)), mi) : 0);
+  const five = D.quotaKeys.find(k => k === 'codex|300') || D.quotaKeys.find(k => k.endsWith('|300'));
+  const burn = five ? quotaBurn(five, wk.a, now) : null;
+  const ch = before ? total / before - 1 : NaN;
+  return h('a', {class: 'now-card', href: '#/review', title: 'Compared with last week at the same point in time'},
+    h('div', {class: 'now-label'}, 'This week', h('span', {class: 'pill'}, `${c.date(wk.a)} – ${c.date(wk.b - 1)}`)),
+    h('div', {class: 'now-value'}, splitValue(fmtMetric(total)), h('span', {class: ['now-aside', Number.isFinite(ch) && (ch > 0 ? 'up' : 'down')]},
+      Number.isFinite(ch) ? `${ch > 0 ? '+' : '−'}${num(Math.abs(ch * 100))}% vs last week` : 'no data last week')),
+    chartBox(el => miniColumns(el, {values: days, labels: WEEKDAYS.map(d => d.slice(0, 2)), titles: days.map((_, i) => c.weekdayDate(c.dayStart(wk.startDay + i))), fmt: fmtMetric, unit: metricUnit(state.metric), hot: c.today() - wk.startDay, height: 34})),
+    h('div', {class: 'now-foot'}, `last week ${fmtMetric(lastWeek)}`, burn?.burn ? ` · ${num(burn.burn)}% of five-hour quota (${num(burn.started)} ${plural(burn.started, 'window', 'windows')})` : ''));
+}
+
+function splitValue(text) {
+  const m = /^([−+\-\d.,\s  ]+?)\s?(K|M|B|T)$/.exec(text);
+  return m ? [h('b', {}, m[1]), h('span', {class: 'unit'}, m[2])] : h('b', {}, text);
 }
 
 // ---------- overview ----------
+// Two layers: what is happening right now (live quotas, today, this week), then the selected period
+// as a KPI strip, one chart, and a grid of same-size summary cards.
 export function overview() {
   const D = ctx.D, v = view(), mi = D.mi[state.metric], c = ctx.clock;
   const total = sum(v.events, mi), prev = sum(v.previous, mi);
-  const days = new Set(v.events.map(e => c.day(e[0]))).size;
-  const sessionSet = new Set(v.events.map(e => e[3]));
-  let mainSessions = 0;
-  for (const i of sessionSet) if (sessionKind(D.sessions[i]) === 'main') mainSessions++;
   const inp = sum(v.events, D.mi.input_tokens), cached = sum(v.events, D.mi.cached_input_tokens);
   const out = sum(v.events, D.mi.output_tokens), reasoning = D.mi.reasoning_output_tokens != null ? sum(v.events, D.mi.reasoning_output_tokens) : 0;
   const allTokens = sum(v.events, D.mi.total_tokens);
-  const vsNote = `vs. previous ${v.days} ${plural(v.days, 'day', 'days')}`;
-  const tiles = h('div', {class: 'tiles'},
-    tile(metricLabel(state.metric), fmtMetric(total), null, {delta: prev ? total / prev - 1 : NaN, deltaNote: vsNote, class: 'hero'}),
-    tile('Average per active day', fmtMetric(days ? total / days : 0), `active days: ${days} of ${v.days}`),
-    tile('Sessions', num(mainSessions), `another ${num(sessionSet.size - mainSessions)} subagents and reviews`),
-    tile('Model responses', num(v.events.length), `≈ ${compact(v.events.length ? allTokens / v.events.length : 0)} tokens per response`),
-    tile('Input cache share', share(cached, inp, 0), `${compact(cached)} of ${compact(inp)} input tokens`),
-    tile('Output', compact(out), reasoning ? `reasoning — ${share(reasoning, out, 0)}` : 'including reasoning'));
+  const vsNote = `vs previous ${v.days} ${plural(v.days, 'day', 'days')}`;
 
+  // Daily series for the KPI sparklines.
+  const n = v.toDay - v.fromDay + 1, dayTotal = Array(n).fill(0), dayResp = Array(n).fill(0), dayIn = Array(n).fill(0), dayCached = Array(n).fill(0);
+  const daySessions = Array.from({length: n}, () => new Set());
+  for (const e of v.events) {
+    const i = c.day(e[0]) - v.fromDay; if (i < 0 || i >= n) continue;
+    dayTotal[i] += e[5][mi] || 0; dayResp[i]++; dayIn[i] += e[5][D.mi.input_tokens] || 0; dayCached[i] += e[5][D.mi.cached_input_tokens] || 0;
+    if (sessionKind(D.sessions[e[3]]) === 'main') daySessions[i].add(e[3]);
+  }
+  const activeDays = dayTotal.filter(Boolean).length;
+  const stats = sessionStats(v.events, mi);
+  let mainSessions = 0;
+  for (const st of stats.values()) if (sessionKind(st.session) === 'main') mainSessions++;
+  const spark = (values, opts = {}) => {
+    if (n < 2) return null;
+    const svg = sparkline(values, {width: 150, height: 28, color: 'var(--ink-2)', focus: -1, ...opts});
+    svg.setAttribute('preserveAspectRatio', 'none'); // stretch to the tile; the stroke keeps its width
+    return svg;
+  };
+  const tiles = h('div', {class: 'tiles'},
+    tile(metricLabel(state.metric), fmtMetric(total), null, {delta: prev ? total / prev - 1 : NaN, deltaNote: vsNote, class: 'hero', spark: spark(dayTotal, {color: 'var(--accent)'})}),
+    tile('Per active day', fmtMetric(activeDays ? total / activeDays : 0), `${activeDays} of ${v.days} days active`, {spark: spark(dayTotal.map(x => x || null))}),
+    tile('Sessions', num(mainSessions), `+ ${num(stats.size - mainSessions)} subagents and reviews`, {spark: spark(daySessions.map(x => x.size))}),
+    tile('Responses', num(v.events.length), `≈ ${compact(v.events.length ? allTokens / v.events.length : 0)} tokens each`, {spark: spark(dayResp)}),
+    tile('Input from cache', share(cached, inp, 0), `${compact(cached)} of ${compact(inp)}`, {spark: spark(dayIn.map((x, i) => x ? dayCached[i] / x : null))}));
+
+  // ---------- main chart ----------
   const gran = granularity(v), key = bucketer(gran), bs = buckets(v, gran);
   const values = new Map(), present = new Set();
   for (const e of v.events) {
@@ -110,7 +153,6 @@ export function overview() {
     const m = D.models[e[1]]; row[m] = (row[m] || 0) + (e[5][mi] || 0); present.add(m);
   }
   const series = D.models.filter(m => present.has(m)).map(m => ({key: m, label: m, color: color(m)}));
-  // The previous period of equal length, shifted onto the same buckets.
   let ghost = null;
   if (state.compare) {
     ghost = new Map();
@@ -125,44 +167,41 @@ export function overview() {
   };
   ctx.bar = granBar();
   const usageCard = card(`${metricLabel(state.metric)} ${granLabels[gran].toLowerCase()}`, {
-    sub: `Each bar shows the total for a period, colored by model.${ghost ? ` Dashed markers show the previous ${v.days} ${plural(v.days, 'day', 'days')} on the same buckets.` : ''} Click a bar to zoom in.`,
-    actions: compareToggle()},
-  chartBox(el => columns(el, {buckets: bs, series, values, fmt: fmtMetric, onClick: drill, ghost, ghostLabel: `Previous ${v.days} ${plural(v.days, 'day', 'days')}`})),
+    sub: `Colored by model.${ghost ? ' Dashed markers: the previous period on the same buckets.' : ''} Click a bar to zoom in.`, actions: compareToggle()},
+  chartBox(el => columns(el, {buckets: bs, series, values, fmt: fmtMetric, onClick: drill, ghost, ghostLabel: `Previous ${v.days} ${plural(v.days, 'day', 'days')}`, height: 240})),
   legend([...series, ...(ghost ? [{label: 'previous period', color: 'var(--ink-2)', line: true}] : [])]));
 
+  // ---------- summary cards ----------
+  const mini = (title, link, body, sub) => card(title, {class: 'mini', sub, actions: link ? h('a', {href: link[0], class: 'link'}, link[1]) : null}, body);
   const models = byModel(v.events, mi);
-  const modelCard = card('Models', {sub: 'Click a model to filter the dashboard'},
-    chartBox(el => barList(el, models.map(m => ({label: m.model, value: m.value, color: color(m.model), model: m.model})), {
-      fmt: fmtMetric, onClick: it => toggleModel(it.model)})));
-
-  const parts = [
-    {label: 'Uncached input', value: inp - cached, color: 'var(--c1)', note: 'new context; the most expensive part'},
-    {label: 'Cached input', value: cached, color: 'var(--c2)', note: 'context read again'},
-    {label: 'Output: response', value: out - reasoning, color: 'var(--c3)'},
-    {label: 'Output: reasoning', value: reasoning, color: 'var(--c4)'},
-  ];
-  const compCard = card('Token composition', {sub: 'Total tokens = input + output; cached tokens are part of input, reasoning tokens are part of output'},
-    chartBox(el => composition(el, parts)));
-
-  const heat = Array.from({length: 7}, () => Array(24).fill(0));
-  for (const e of v.events) heat[c.weekday(e[0])][c.hour(e[0])] += e[5][mi] || 0;
-  const heatCard = card('Activity by day and hour', {sub: `${metricLabel(state.metric)} by weekday and hour (${state.tz})`},
-    chartBox(el => heatmap(el, {rows: WEEKDAYS, cols: Array.from({length: 24}, (_, i) => String(i).padStart(2, '0')), values: heat, fmt: fmtMetric, note: metricUnit(state.metric)})));
-
-  const stats = sessionStats(v.events, mi);
+  const modelCard = mini('Models', ['#/models', 'Compare →'],
+    chartBox(el => rankList(el, models.map(m => ({label: m.model, value: m.value, color: color(m.model), model: m.model})), {fmt: fmtMetric, onClick: it => toggleModel(it.model)})));
   const projects = projectStats(stats);
-  const projCard = card('Projects', {sub: 'By session working directory. Click a project to filter the dashboard', actions: h('a', {href: '#/projects', class: 'link'}, 'All projects →')},
-    chartBox(el => barList(el, projects.map(p => ({label: p.name, sub: projectSub(p), value: p.value, key: p.key, title: [...p.paths].join('\n')})), {
-      fmt: fmtMetric, max: 8, onClick: it => toggleProject(it.key)})));
-
-  const top = [...stats.values()].sort((p, q) => q.value - p.value).slice(0, 8);
-  const topCard = card('Highest-usage sessions', {actions: h('a', {href: '#/sessions', class: 'link'}, 'All sessions →')},
-    sessionTable(top, {pageSize: 8, compactView: true}));
+  const projCard = mini('Projects', ['#/projects', 'All →'],
+    chartBox(el => rankList(el, projects.map(p => ({label: p.name, value: p.value, key: p.key, title: [...p.paths].join('\n')})), {fmt: fmtMetric, onClick: it => toggleProject(it.key)})));
+  const topSessions = [...stats.values()].sort((p, q) => q.value - p.value);
+  const sessCard = mini('Top sessions', ['#/sessions', 'All →'],
+    chartBox(el => rankList(el, topSessions.map(st => ({label: sessionTitle(st.session), sub: projectName(st.session.cwd), value: st.value, color: color(D.models[st.mainModel]), id: st.session.id})),
+      {fmt: fmtMetric, total: total, onClick: it => sessionDetail(it.id)})));
+  const mixCard = mini('Token mix', null, chartBox(el => composition(el, [
+    {label: 'New input', value: inp - cached, color: 'var(--c1)'}, {label: 'Cached input', value: cached, color: 'var(--c2)'},
+    {label: 'Response', value: out - reasoning, color: 'var(--c3)'}, {label: 'Reasoning', value: reasoning, color: 'var(--c4)'}])),
+  'Cached input is context read again; reasoning is part of output');
+  const hours = Array(24).fill(0), weekdays = Array(7).fill(0);
+  for (const e of v.events) { hours[c.hour(e[0])] += e[5][mi] || 0; weekdays[c.weekday(e[0])] += e[5][mi] || 0; }
+  const peakHour = hours.indexOf(Math.max(...hours)), peakDay = weekdays.indexOf(Math.max(...weekdays));
+  const whenCard = mini('When you work', null, [
+    chartBox(el => miniColumns(el, {values: hours, labels: hours.map((_, i) => i % 6 ? '' : String(i).padStart(2, '0')), titles: hours.map((_, i) => `${String(i).padStart(2, '0')}:00–${String(i + 1).padStart(2, '0')}:00`), fmt: fmtMetric, unit: metricUnit(state.metric), hot: peakHour, height: 56})),
+    chartBox(el => miniColumns(el, {values: weekdays, labels: WEEKDAYS, fmt: fmtMetric, unit: metricUnit(state.metric), hot: peakDay, height: 36}))],
+  total ? `Busiest: ${WEEKDAYS[peakDay]} and ${String(peakHour).padStart(2, '0')}:00–${String(peakHour + 1).padStart(2, '0')}:00 (${state.tz})` : null);
+  const signalCard = mini('Signals', null, signals(), 'One line from each focus page');
 
   return [
-    focusStrip(),
-    card('Current quotas', {sub: 'From the latest recorded server response for this profile', actions: h('a', {href: '#/quota', class: 'link'}, 'Quota analysis →')}, quotaMeters()),
-    tiles, usageCard, grow(modelCard, compCard), grow(heatCard, projCard), topCard];
+    h('h3', {class: 'section-title'}, 'Right now'),
+    h('div', {class: 'now'}, quotaCards(), todayCard(), weekCard()),
+    h('h3', {class: 'section-title'}, `Selected period · ${v.days === 1 ? c.dateY(v.a) : `${c.date(v.a)} – ${c.dateY(v.b - 1)}`}`),
+    tiles, usageCard,
+    h('div', {class: 'grid three minis'}, modelCard, projCard, sessCard, mixCard, whenCard, signalCard)];
 }
 
 // ---------- quota ----------

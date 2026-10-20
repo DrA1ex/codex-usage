@@ -91,7 +91,7 @@ How does context build up inside a session, and what does a long context cost? O
 
 ### Overview
 
-Check current quotas with a forecast — at the pace of the last hour (five-hour quota) or day (weekly quota), does the counter reach 100% before the reset, and how much per day lasts until the weekly reset — plus estimated remaining tokens, period comparisons, model usage, token composition, and your activity heatmap. The usage chart can overlay the previous period of the same length. Click a chart bar to open that period, or a model to filter the dashboard.
+The overview has two layers. **Right now** shows the live quota counters — with a forecast at the pace of the last hour (five-hour quota) or day (weekly quota): does the counter reach 100% before the reset, and how much per day lasts until the weekly reset — plus today and this week against typical days and last week. **Selected period** follows the filters: key figures with daily sparklines, usage over time (optionally against the previous period), and compact cards for models, projects, top sessions, token mix, when you work, and one signal from each focus page. Click a model or a project to filter the dashboard, a session to open it, or a chart bar to zoom in.
 
 <img width="900" alt="Model shares and token composition" src="https://github.com/user-attachments/assets/8d225403-f48c-4fb7-a8d4-20c6be5143b7" />
 
