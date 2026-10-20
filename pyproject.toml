@@ -20,4 +20,4 @@ codex-usage-web = "codex_usage.server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-codex_usage = ["report.html", "web/*", "web/js/*"]
+codex_usage = ["report.html", "web/*", "web/js/*", "web/img/*"]

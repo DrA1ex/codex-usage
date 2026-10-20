@@ -24,7 +24,9 @@ function applyAttrs(node, attrs, isSvg) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
     if (k === 'class') node.setAttribute('class', Array.isArray(v) ? v.filter(Boolean).join(' ') : v);
-    else if (k === 'style' && typeof v === 'object') Object.assign(node.style, v);
+    else if (k === 'style' && typeof v === 'object') {
+      for (const [prop, value] of Object.entries(v)) if (value != null) prop.startsWith('--') ? node.style.setProperty(prop, value) : node.style[prop] = value;
+    }
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'dataset') Object.assign(node.dataset, v);
     else if (!isSvg && (k === 'value' || k === 'checked' || k === 'selected' || k === 'disabled')) node[k] = v;
@@ -212,4 +214,39 @@ export function median(values) {
 export function fill(el, ...children) {
   el.replaceChildren(...children.flat(Infinity).filter(c => c != null && c !== false).map(c => c instanceof Node ? c : document.createTextNode(String(c))));
   return el;
+}
+
+export function quantile(values, q) {
+  if (!values.length) return 0;
+  const v = [...values].sort((a, b) => a - b), pos = (v.length - 1) * q, lo = Math.floor(pos);
+  return v[lo] + (v[Math.min(lo + 1, v.length - 1)] - v[lo]) * (pos - lo);
+}
+
+// Two-sided Mann–Whitney U test (normal approximation with tie correction).
+// Distribution-free, so a few unusually large windows cannot fake a quota change.
+export function mannWhitney(a, b) {
+  const n1 = a.length, n2 = b.length;
+  if (!n1 || !n2) return {p: NaN, z: 0};
+  const all = [...a.map(v => [v, 0]), ...b.map(v => [v, 1])].sort((p, q) => p[0] - q[0]);
+  let r1 = 0, ties = 0;
+  for (let i = 0; i < all.length;) {
+    let j = i;
+    while (j + 1 < all.length && all[j + 1][0] === all[i][0]) j++;
+    const rank = (i + j) / 2 + 1, t = j - i + 1;
+    ties += t ** 3 - t;
+    for (let k = i; k <= j; k++) if (all[k][1] === 0) r1 += rank;
+    i = j + 1;
+  }
+  const u = r1 - n1 * (n1 + 1) / 2, n = n1 + n2, mu = n1 * n2 / 2;
+  const sigma = Math.sqrt(n1 * n2 / 12 * ((n + 1) - ties / (n * (n - 1))));
+  if (!sigma) return {p: 1, z: 0};
+  const z = (u - mu - Math.sign(u - mu) * .5) / sigma;
+  return {p: Math.min(1, 2 * (1 - normalCdf(Math.abs(z)))), z};
+}
+
+function normalCdf(x) {
+  // Abramowitz–Stegun 7.1.26
+  const t = 1 / (1 + .3275911 * x / Math.SQRT2);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - .284496736) * t + .254829592) * t * Math.exp(-x * x / 2);
+  return .5 * (1 + y);
 }

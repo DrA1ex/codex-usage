@@ -1,0 +1,43 @@
+// Regression checks for the focus pages' statistics and calendar math.
+// Run with: node tests/test_focus.mjs
+import assert from 'node:assert/strict';
+
+const {mannWhitney, quantile, Clock} = await import('../src/codex_usage/web/js/util.js');
+const core = await import('../src/codex_usage/web/js/core.js');
+const close = (actual, expected, tolerance, message) => assert(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} vs ${expected}`);
+
+// Mann–Whitney: fully separated samples (normal approximation with continuity correction).
+close(mannWhitney([1, 2, 3, 4, 5], [6, 7, 8, 9, 10]).p, 0.0122, 0.0005, 'separated samples');
+assert.equal(mannWhitney([3, 3, 3], [3, 3, 3]).p, 1, 'identical samples');
+assert(mannWhitney([5, 1, 4, 2, 3], [2, 4, 3, 5, 1]).p > 0.9, 'same distribution');
+assert(Number.isNaN(mannWhitney([], [1]).p), 'empty sample');
+assert.equal(quantile([4, 1, 3, 2], 0.5), 2.5);
+
+// Quota burn sums increases inside each reset epoch; a new deadline starts from zero.
+const clock = new Clock('UTC');
+core.ctx.clock = clock;
+core.ctx.D = {
+  quota_series: {'codex|300': [[0, 10, 1000], [100, 30, 1000], [200, 5, 5000], [300, 20, 5000], [350, 12, 5000, 1]]},
+  windows: [
+    {limit_id: 'codex', minutes: 300, start: 0, end: 100, deadline: 1000, full: true},
+    {limit_id: 'codex', minutes: 300, start: 200, end: 350, deadline: 5000, full: false},
+  ],
+};
+const all = core.quotaBurn('codex|300', 0, 400);
+assert.equal(all.burn, 10 + 20 + 5 + 15 + 12, 'burn across epochs, refill restarts from zero');
+assert.equal(core.quotaBurn('codex|300', 150, 320).burn, 5 + 15, 'burn inside a sub-range');
+assert.equal(all.started, 2);
+assert.equal(all.full, 1);
+assert.equal(all.locked, 100, 'lockout ends when the next window starts');
+
+// Calendar periods: ISO weeks start on Monday; months roll over the year boundary.
+const day = clock.fromIso('2026-10-21'); // Wednesday
+assert.equal(clock.iso(core.periodStart('week', day, clock)), '2026-10-19');
+assert.equal(clock.iso(core.periodShift('month', clock.fromIso('2026-12-01'), 1, clock)), '2027-01-01');
+assert.equal(clock.iso(core.periodShift('month', clock.fromIso('2026-01-01'), -1, clock)), '2025-12-01');
+const month = core.period('month', clock.fromIso('2026-02-01'), clock);
+assert.equal(month.days, 28);
+assert.equal(core.contextBucket(15_999), 0);
+assert.equal(core.contextBucket(128_000), 4);
+assert.equal(core.contextBucket(2e6), core.CONTEXT_BUCKETS.length - 1);
+console.log('focus checks passed');

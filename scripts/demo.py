@@ -170,7 +170,10 @@ export const api = {
             source = source[:start] + demo_api + "\n" + source[end:]
         imports["demo/" + path.stem] = "data:text/javascript;base64," + base64.b64encode(source.encode()).decode()
     html = (web / "index.html").read_text()
-    html = html.replace('<link rel="stylesheet" href="/static/style.css">', '<style>' + (web / "style.css").read_text() + '</style>')
+    style = (web / "style.css").read_text()
+    for image in sorted((web / "img").glob("*.png")):
+        style = style.replace(f"/static/img/{image.name}", "data:image/png;base64," + base64.b64encode(image.read_bytes()).decode())
+    html = html.replace('<link rel="stylesheet" href="/static/style.css">', '<style>' + style + '</style>')
     html = html.replace("Local · no external requests", "Synthetic demo · local only")
     html = html.replace('<script type="module" src="/static/js/app.js"></script>',
                         '<script type="application/json" id="demo-data">' + payload_json + '</script>\n'

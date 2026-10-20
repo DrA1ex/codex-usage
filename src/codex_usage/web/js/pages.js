@@ -3,12 +3,23 @@ import {locales, h, fill, num, compact, pct, share, duration, ago, quotaName, mi
 import {columns, lines, quotaChart, timeColumns, heatmap, barList, composition, legend, hideTip} from './charts.js';
 import {ctx, state, saveState, view, sum, byModel, sessionStats, projectStats, granularity, bucketer, buckets, granLabels,
   card, tile, chartBox, segmented, table, color, modelName, modelDot, metricLabel, metricUnit, sourceNames, sessionKind, info, select} from './core.js';
+import {focusStrip} from './focus.js';
 
 const weekdayFormat = new Intl.DateTimeFormat(locales, {weekday: 'short', timeZone: 'UTC'});
 const WEEKDAYS = Array.from({length: 7}, (_, day) => weekdayFormat.format(new Date(Date.UTC(2024, 0, 1 + day))));
 const fmtMetric = v => state.metric === 'responses' ? num(v) : compact(v);
 
 function grow(...children) { return h('div', {class: 'grid'}, children); }
+
+// Bucket size lives in the sticky bar so it stays reachable next to the charts it changes.
+export function granBar() {
+  return h('div', {class: 'bar-group'}, h('span', {class: 'bar-label'}, 'Buckets'),
+    segmented(Object.entries(granLabels), state.gran, g => { state.gran = g; saveState(); ctx.render(); }, {class: 'small', label: 'Buckets'}));
+}
+function compareToggle() {
+  return h('label', {class: 'check small', title: 'Overlay the previous period of the same length'},
+    h('input', {type: 'checkbox', checked: state.compare, onchange: e => { state.compare = e.target.checked; saveState(); ctx.render(); }}), 'Compare with previous period');
+}
 
 // ---------- quota helpers ----------
 function windowValue(w, metric = state.metric) {
@@ -77,16 +88,25 @@ export function overview() {
     const m = D.models[e[1]]; row[m] = (row[m] || 0) + (e[5][mi] || 0); present.add(m);
   }
   const series = D.models.filter(m => present.has(m)).map(m => ({key: m, label: m, color: color(m)}));
+  // The previous period of equal length, shifted onto the same buckets.
+  let ghost = null;
+  if (state.compare) {
+    ghost = new Map();
+    const span = v.b - v.a, keys = new Set(bs.map(b => b.key));
+    for (const e of v.previous) { const k = key(e[0] + span); if (keys.has(k)) ghost.set(k, (ghost.get(k) || 0) + (e[5][mi] || 0)); }
+  }
   const drill = gran === 'hour' ? null : b => {
     const from = c.day(b.start), to = c.day(b.end - 1);
     Object.assign(state.range, {preset: 'custom', from: c.iso(from), to: c.iso(to)});
     if (gran === 'day') state.gran = 'hour';
     saveState(); ctx.render();
   };
+  ctx.bar = granBar();
   const usageCard = card(`${metricLabel(state.metric)} ${granLabels[gran].toLowerCase()}`, {
-    sub: 'Each bar shows the total for a period, colored by model. Click a bar to zoom in.',
-    actions: segmented(Object.entries(granLabels), state.gran, g => { state.gran = g; saveState(); ctx.render(); }, {class: 'small'})},
-  chartBox(el => columns(el, {buckets: bs, series, values, fmt: fmtMetric, onClick: drill})), series.length > 1 ? legend(series) : null);
+    sub: `Each bar shows the total for a period, colored by model.${ghost ? ` Dashed markers show the previous ${v.days} ${plural(v.days, 'day', 'days')} on the same buckets.` : ''} Click a bar to zoom in.`,
+    actions: compareToggle()},
+  chartBox(el => columns(el, {buckets: bs, series, values, fmt: fmtMetric, onClick: drill, ghost, ghostLabel: `Previous ${v.days} ${plural(v.days, 'day', 'days')}`})),
+  legend([...series, ...(ghost ? [{label: 'previous period', color: 'var(--ink-2)', line: true}] : [])]));
 
   const models = byModel(v.events, mi);
   const modelCard = card('Models', {sub: 'Click a model to filter the dashboard'},
@@ -118,6 +138,7 @@ export function overview() {
     sessionTable(top, {pageSize: 8, compactView: true}));
 
   return [
+    focusStrip(),
     card('Current quotas', {sub: 'From the latest recorded server response for this profile', actions: h('a', {href: '#/quota', class: 'link'}, 'Quota analysis →')}, quotaMeters()),
     tiles, usageCard, grow(modelCard, compCard), grow(heatCard, projCard), topCard];
 }
@@ -139,10 +160,10 @@ export function quota() {
   const now = D.quota_now.find(q => q.minutes === minutes && q.limit_id === limitId);
 
   const set = patch => { Object.assign(state.quota, patch); saveState(); ctx.render(); };
-  const controls = h('div', {class: 'toolbar'},
-    h('label', {class: 'field'}, h('span', {}, 'Counter'), segmented(D.quotaKeys.map(k => [k, quotaName(Number(k.split('|')[1])) + (k.split('|')[0] !== 'codex' ? ` · ${k.split('|')[0]}` : '')]), qkey, k => set({key: k}))),
-    h('label', {class: 'field'}, h('span', {}, 'Exhaustion threshold'), segmented([[100, '100%'], [98, '≥ 98%'], [95, '≥ 95%'], [90, '≥ 90%']], threshold, t => set({threshold: t}))),
-    h('label', {class: 'field'}, h('span', {}, 'Group by'), segmented([[1, '1 day'], [2, '2 days'], [3, '3 days'], [7, '7 days']], state.quota.period, p => set({period: p}))));
+  ctx.bar = h('div', {class: 'bar-group'},
+    segmented(D.quotaKeys.map(k => [k, quotaName(Number(k.split('|')[1])) + (k.split('|')[0] !== 'codex' ? ` · ${k.split('|')[0]}` : '')]), qkey, k => set({key: k}), {class: 'small', label: 'Counter'}),
+    h('span', {class: 'bar-label'}, 'Exhausted at'), segmented([[100, '100%'], [98, '≥ 98%'], [95, '≥ 95%'], [90, '≥ 90%']], threshold, t => set({threshold: t}), {class: 'small', label: 'Exhaustion threshold'}),
+    h('span', {class: 'bar-label'}, 'Trend by'), segmented([[1, '1 d'], [2, '2 d'], [3, '3 d'], [7, '7 d']], state.quota.period, p => set({period: p}), {class: 'small', label: 'Group trend by'}));
 
   const full = eligible.filter(w => w.full).length;
   const tiles = h('div', {class: 'tiles'},
@@ -249,7 +270,7 @@ export function quota() {
     h('p', {}, 'Tokens per 1% is a rough estimate: total window tokens divided by the percentage increase. Voice, images and activity on other devices may share the budget without appearing in this profile token counts. The estimate can understate token capacity.'),
     h('p', {}, 'Internal auto-review usage is excluded by default because its quota impact cannot be established from the logs. Enable Internal in the filters to include it.')));
 
-  return [controls, tiles, fillCard, windowsCard, grow(trendCard, modelTable), windowsTable, resetCard, explain];
+  return [tiles, fillCard, windowsCard, grow(trendCard, modelTable), windowsTable, resetCard, explain];
 }
 
 function statusText(w, threshold) {
@@ -263,7 +284,7 @@ function statusChip(w, threshold) {
   return h('span', {class: ['chip', kind], title: w.exclusion || ''}, t);
 }
 
-function windowDetail(w) {
+export function windowDetail(w) {
   const c = ctx.clock, models = Object.entries(w.models).sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0));
   const internal = Object.entries(w.internal_models);
   drawer(`Window ${c.dateTime(w.start)}`, [
@@ -315,6 +336,7 @@ export function modelsPage() {
       {key: 'last', label: 'Last used', value: r => r.last, render: r => c.dateTime(r.last)},
     ]}));
 
+  ctx.bar = granBar();
   const gran = granularity(v), key = bucketer(gran), bs = buckets(v, gran);
   const totals = new Map(), values = new Map();
   for (const e of v.events) {
@@ -341,7 +363,7 @@ export function modelsPage() {
 }
 
 // ---------- sessions ----------
-function sessionTitle(sess) {
+export function sessionTitle(sess) {
   return sess?.title || (sess?.source === 'review' ? 'Auto-review' : sess?.source === 'subagent' ? 'Subagent' : 'Untitled');
 }
 
@@ -382,12 +404,12 @@ export function sessions() {
   const search = h('input', {type: 'search', placeholder: 'Title, directory, branch or ID', value: f.q, 'aria-label': 'Search sessions'});
   search.addEventListener('input', debounceInput(() => { state.sessions.q = search.value; saveState(); ctx.render({keepFocus: 'session-search'}); }));
   search.id = 'session-search';
-  const controls = h('div', {class: 'toolbar'},
-    h('label', {class: 'field grow'}, h('span', {}, 'Search'), search),
-    h('label', {class: 'field'}, h('span', {}, 'Type'), segmented([['main', `Main · ${counts.main}`], ['subagent', `Subagents · ${counts.subagent}`], ['review', `Reviews · ${counts.review}`], ['all', 'All']], f.kind, k => set({kind: k}))),
-    h('label', {class: 'field'}, h('span', {}, 'Project'), select([['', 'All projects'], ...projects.map(p => [p.key, `${p.name} · ${compact(p.value)}`])], f.project, p => set({project: p}))));
+  search.classList.add('bar-search');
+  ctx.bar = h('div', {class: 'bar-group'}, search,
+    segmented([['main', `Main · ${counts.main}`], ['subagent', `Subagents · ${counts.subagent}`], ['review', `Reviews · ${counts.review}`], ['all', 'All']], f.kind, k => set({kind: k}), {class: 'small', label: 'Session type'}),
+    select([['', 'All projects'], ...projects.map(p => [p.key, `${p.name} · ${compact(p.value)}`])], f.project, p => set({project: p}), {'aria-label': 'Project', class: 'bar-select'}));
   const total = list.reduce((n, st) => n + st.value, 0);
-  return [controls,
+  return [
     h('div', {class: 'tiles'},
       tile('Sessions', num(list.length), f.kind === 'main' ? 'main conversations' : ''),
       tile(metricLabel(state.metric), fmtMetric(total), `${share(total, sum(v.events, mi))} of total in range`),

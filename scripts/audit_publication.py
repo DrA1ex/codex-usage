@@ -14,6 +14,11 @@ ROOT_FILES = {".gitignore", "README.md", "VALIDATION.md", "pyproject.toml", "cod
               "generate.py", "serve.py", "generate.command", "serve.command"}
 SOURCE_SUFFIXES = {".py", ".js", ".mjs", ".html", ".css", ".md", ".sh"}
 SOURCE_DIRS = {"src", "tests", "docs", "scripts"}
+# Generated UI artwork: PNG only, only here, and without metadata chunks that could carry private text.
+IMAGE_DIR = "src/codex_usage/web/img/"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_ALLOWED_CHUNKS = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND", b"gAMA", b"sRGB", b"pHYs"}
+MAX_IMAGE_BYTES = 512 * 1024
 REQUIRED_IGNORES = {"reports/", "archive/", "exports/", "screenshots/", "demo-data/", ".claude/", ".codex*/",
                     "__pycache__/", ".venv/", "build/", "dist/", "*.egg-info/", "node_modules/", ".env", ".env.*",
                     "auth.json", "codex_usage.local.json", "*.jsonl", "*.jsonl.gz", "*.jsonl.zst", "*.sqlite", "*.pickle"}
@@ -33,9 +38,28 @@ def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=ROOT, check=check, capture_output=True)
 
 
+def is_image(name: str) -> bool:
+    return name.startswith(IMAGE_DIR) and name.endswith(".png") and "/" not in name[len(IMAGE_DIR):]
+
+
+def image_errors(name: str, data: bytes) -> list[str]:
+    if len(data) > MAX_IMAGE_BYTES:
+        return [f"{name}: image is larger than {MAX_IMAGE_BYTES // 1024} KB"]
+    if not data.startswith(PNG_SIGNATURE):
+        return [f"{name}: not a PNG file"]
+    errors, offset = [], len(PNG_SIGNATURE)
+    while offset + 8 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], "big")
+        kind = data[offset + 4:offset + 8]
+        if kind not in PNG_ALLOWED_CHUNKS:
+            errors.append(f"{name}: PNG metadata chunk {kind.decode('latin-1')!r} is not allowed")
+        offset += 12 + length
+    return errors
+
+
 def allowed(name: str) -> bool:
     path = Path(name)
-    return name in ROOT_FILES or (len(path.parts) > 1 and path.parts[0] in SOURCE_DIRS
+    return name in ROOT_FILES or is_image(name) or (len(path.parts) > 1 and path.parts[0] in SOURCE_DIRS
                                  and not any(p.startswith(".") or p == "__pycache__" for p in path.parts)
                                  and path.suffix in SOURCE_SUFFIXES)
 
@@ -93,6 +117,9 @@ def audit(staged: bool = False) -> tuple[list[str], list[str]]:
             errors.append(f"Symlink is not allowed: {name}")
             continue
         data = git("show", ":" + name).stdout if staged else path.read_bytes()
+        if is_image(name):
+            errors.extend(image_errors(name, data))
+            continue
         try:
             content = data.decode("utf-8")
         except UnicodeDecodeError:
@@ -142,6 +169,9 @@ def audit_history() -> tuple[list[str], list[str]]:
                 errors.append(f"{commit[:8]}: private/generated file in history: {name}")
                 continue
             data = git("show", commit + ":" + name).stdout
+            if is_image(name):
+                errors.extend(f"{commit[:8]}: {e}" for e in image_errors(name, data))
+                continue
             try:
                 content = data.decode("utf-8")
             except UnicodeDecodeError:

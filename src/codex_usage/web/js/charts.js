@@ -58,12 +58,15 @@ function columnPath(x, y0, w, y1, rounded) {
 }
 
 // ---------- stacked columns over categorical buckets ----------
-export function columns(el, {buckets, series, values, fmt = compact, height = 300, stacked = true, onClick, emptyText}) {
+// ghost: Map(bucket key → value) drawn as a dashed marker (e.g. the previous period);
+// focus: bucket key kept bright while the others fade; ref: {value, label} horizontal line.
+export function columns(el, {buckets, series, values, fmt = compact, height = 300, stacked = true, onClick, emptyText, ghost, ghostLabel = 'Previous period', focus, ref, clickNote}) {
   const totals = buckets.map(b => series.reduce((n, sr) => n + (values.get(b.key)?.[sr.key] || 0), 0));
-  if (!buckets.length || !totals.some(Boolean)) { fill(el, h('div', {class: 'empty'}, emptyText || 'No data in the selected period')); return; }
+  const ghosts = buckets.map(b => ghost?.get(b.key) || 0);
+  if (!buckets.length || !(totals.some(Boolean) || ghosts.some(Boolean))) { fill(el, h('div', {class: 'empty'}, emptyText || 'No data in the selected period')); return; }
   const {svg, W, H} = frame(el, height, 'Bar chart');
   const L = 64, R = 12, T = 14, B = 34;
-  const max = stacked ? Math.max(...totals) : Math.max(...buckets.flatMap(b => series.map(sr => values.get(b.key)?.[sr.key] || 0)));
+  const max = Math.max(ref?.value || 0, ...ghosts, ...(stacked ? totals : buckets.flatMap(b => series.map(sr => values.get(b.key)?.[sr.key] || 0))));
   const ticks = niceTicks(max), top = ticks[ticks.length - 1];
   const y = v => H - B - v / top * (H - T - B);
   yAxis(svg, ticks, y, L, R, W, fmt);
@@ -73,7 +76,7 @@ export function columns(el, {buckets, series, values, fmt = compact, height = 30
   svg.append(marks);
   buckets.forEach((b, i) => {
     const cx = L + band * (i + .5), x = cx - cw / 2;
-    const g = s('g', {class: 'col'});
+    const g = s('g', {class: ['col', focus != null && b.key !== focus && 'faded']});
     let base = 0;
     const present = series.filter(sr => (values.get(b.key)?.[sr.key] || 0) > 0);
     present.forEach((sr, j) => {
@@ -85,13 +88,15 @@ export function columns(el, {buckets, series, values, fmt = compact, height = 30
       if (d) g.append(s('path', {d, fill: sr.color}));
       base += v;
     });
+    if (ghosts[i]) g.append(s('line', {x1: x - 3, x2: x + cw + 3, y1: y(ghosts[i]), y2: y(ghosts[i]), class: 'ghost'}));
     const hit = s('rect', {x: cx - band / 2, y: T, width: band, height: H - T - B, class: 'hit', tabindex: 0});
     const showB = ev => {
       g.classList.add('hover');
       const rows = series.map(sr => ({color: sr.color, label: sr.label, value: fmt(values.get(b.key)?.[sr.key] || 0), v: values.get(b.key)?.[sr.key] || 0}))
-        .filter(r => r.v > 0).sort((p, q) => q.v - p.v);
+        .filter(r => r.v > 0).sort((p, q) => q.v - p.v).slice(0, 10);
       if (rows.length > 1) rows.push({label: 'Total', value: fmt(totals[i])});
-      showTip(ev, b.label, rows.slice(0, 12), onClick ? 'Click to open this period' : null);
+      if (ghost) rows.push({label: ghostLabel, value: fmt(ghosts[i]), muted: true, color: 'var(--ink-2)'});
+      showTip(ev, b.label, rows, onClick ? clickNote || 'Click to open this period' : null);
     };
     hit.addEventListener('pointermove', showB);
     hit.addEventListener('focus', ev => { const r = hit.getBoundingClientRect(); showB({clientX: r.x + r.width / 2, clientY: r.y + 30}); });
@@ -100,8 +105,12 @@ export function columns(el, {buckets, series, values, fmt = compact, height = 30
     if (onClick) { hit.style.cursor = 'pointer'; hit.addEventListener('click', () => onClick(b)); }
     marks.append(g);
     svg.append(hit);
-    if (i % stride === 0) svg.append(s('text', {x: cx, y: H - B + 20, class: 'tick', 'text-anchor': 'middle'}, b.short || b.label));
+    if (i % stride === 0) svg.append(s('text', {x: cx, y: H - B + 20, class: ['tick', b.key === focus && 'tick-on'], 'text-anchor': 'middle'}, b.short || b.label));
   });
+  if (ref && ref.value > 0) {
+    svg.append(s('line', {x1: L, x2: W - R, y1: y(ref.value), y2: y(ref.value), class: 'refline dashed'}));
+    svg.append(s('text', {x: W - R - 4, y: y(ref.value) - 6, class: 'reflabel', 'text-anchor': 'end'}, ref.label));
+  }
 }
 
 // ---------- multi-series lines with crosshair ----------
@@ -323,4 +332,145 @@ export function composition(el, parts, fmt = compact) {
 export function legend(items) {
   return h('div', {class: 'legend'}, items.map(i => h('span', {class: 'legend-item'},
     h('i', {class: i.line ? 'swatch line' : 'swatch', style: {background: i.color}}), i.label)));
+}
+
+// ---------- tiny inline sparkline (last point emphasised) ----------
+export function sparkline(values, {color = 'var(--s1)', width: W = 132, height: H = 34, focus = values.length - 1, base} = {}) {
+  const svg = s('svg', {viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'spark', 'aria-hidden': 'true'});
+  const vals = values.map(v => v ?? null), known = vals.filter(v => v != null);
+  if (!known.length) return svg;
+  const max = Math.max(...known, base || 0) || 1, n = vals.length;
+  const x = i => n === 1 ? W / 2 : 3 + i * (W - 6) / (n - 1), y = v => H - 3 - v / max * (H - 6);
+  if (base) svg.append(s('line', {x1: 0, x2: W, y1: y(base), y2: y(base), class: 'spark-base'}));
+  let d = '';
+  vals.forEach((v, i) => { if (v != null) d += `${d && vals[i - 1] != null ? 'L' : 'M'}${x(i)},${y(v)}`; });
+  svg.append(s('path', {d, stroke: color, class: 'spark-line'}));
+  if (vals[focus] != null) svg.append(s('circle', {cx: x(focus), cy: y(vals[focus]), r: 3, fill: color}));
+  return svg;
+}
+
+// ---------- diverging change bars (HTML): what grew, what shrank ----------
+export function deltaBars(el, items, {fmt = compact, max: maxItems = 8, empty = 'No change', onClick} = {}) {
+  const shown = items.filter(i => i.delta).sort((p, q) => Math.abs(q.delta) - Math.abs(p.delta)).slice(0, maxItems);
+  if (!shown.length) { fill(el, h('div', {class: 'empty'}, empty)); return; }
+  const max = Math.max(...shown.map(i => Math.abs(i.delta))) || 1;
+  const sign = v => (v > 0 ? '+' : v < 0 ? '−' : '') + fmt(Math.abs(v));
+  fill(el, h('div', {class: 'deltas'}, shown.map(it => h(onClick ? 'button' : 'div', {
+      class: ['delta-row', onClick && 'clickable'], type: onClick ? 'button' : null, onclick: onClick ? () => onClick(it) : null, title: it.title || null},
+    h('div', {class: 'bar-label'}, it.color ? h('i', {class: 'swatch', style: {background: it.color}}) : null, h('span', {class: 'bar-name'}, it.label)),
+    h('div', {class: 'delta-track'},
+      h('div', {class: ['delta-fill', it.delta > 0 ? 'pos' : 'neg'], style: {width: (50 * Math.abs(it.delta) / max) + '%', [it.delta > 0 ? 'left' : 'right']: '50%'}})),
+    h('div', {class: 'bar-value'}, h('b', {}, sign(it.delta)),
+      h('span', {}, it.before ? (it.delta > 0 ? '+' : '') + num(100 * it.delta / it.before) + '%' : 'new'))))));
+}
+
+// ---------- session timeline (HTML Gantt with activity bins) ----------
+// rows: [{label, sub, color, first, last, bins: number[], value, onClick, title}]
+export function timeline(el, {a, b, rows, clock, fmt = compact, nBins, max: maxRows = 14, ticks = []}) {
+  if (!rows.length) { fill(el, h('div', {class: 'empty'}, 'No sessions in this period')); return; }
+  let showAll = false;
+  const draw = () => {
+    const shown = showAll ? rows : rows.slice(0, maxRows);
+    const peak = Math.max(1, ...shown.flatMap(r => r.bins));
+    const pos = t => Math.max(0, Math.min(100, 100 * (t - a) / (b - a)));
+    fill(el, h('div', {class: 'timeline'},
+      h('div', {class: 'tl-row tl-axis'}, h('div'), h('div', {class: 'tl-track'}, ticks.map(([t, label]) => h('span', {class: 'tl-tick', style: {left: pos(t) + '%'}}, label))), h('div')),
+      shown.map(r => {
+        const track = h('div', {class: 'tl-track'},
+          ticks.map(([t]) => h('i', {class: 'tl-grid', style: {left: pos(t) + '%'}})),
+          h('i', {class: 'tl-span', style: {left: pos(r.first) + '%', width: Math.max(.4, pos(r.last) - pos(r.first)) + '%', background: r.color}}),
+          r.bins.map((v, k) => v ? h('i', {class: 'tl-bin', style: {left: (100 * k / nBins) + '%', width: (100 / nBins) + '%', background: r.color, opacity: .25 + .75 * Math.sqrt(v / peak)}}) : null));
+        const row = h(r.onClick ? 'button' : 'div', {class: ['tl-row', r.onClick && 'clickable'], type: r.onClick ? 'button' : null, onclick: r.onClick || null},
+          h('div', {class: 'tl-label'}, h('span', {class: 'bar-name'}, r.label), r.sub ? h('span', {class: 'tl-sub'}, r.sub) : null),
+          track, h('div', {class: 'bar-value'}, h('b', {}, fmt(r.value)), r.share != null ? h('span', {}, num(r.share * 100, 1) + '%') : null));
+        row.addEventListener('pointermove', ev => showTip(ev, r.label, r.tip || [], `${clock.dateTime(r.first)} → ${clock.dateTime(r.last)}`));
+        row.addEventListener('pointerleave', hideTip);
+        return row;
+      }),
+      rows.length > maxRows ? h('button', {type: 'button', class: 'ghost small more', onclick: () => { showAll = !showAll; draw(); }},
+        showAll ? 'Show fewer' : `Show all ${rows.length} sessions`) : null));
+  };
+  draw();
+}
+
+// ---------- heat table (HTML): two dimensions, totals on the margins ----------
+// cell(r, c) → {value, text, sub?, level (0..1) | tone (-1..1), title?}
+export function heatTable(el, {rows, cols, cell, rowTotal, colTotal, corner = '', onCell, empty = 'No data'}) {
+  if (!rows.length || !cols.length) { fill(el, h('div', {class: 'empty'}, empty)); return; }
+  const shade = x => x.tone != null
+    ? `color-mix(in srgb, ${x.tone < 0 ? 'var(--s2)' : 'var(--s1)'} ${Math.round(Math.min(1, Math.abs(x.tone)) * 70)}%, var(--surface))`
+    : x.level ? `color-mix(in srgb, var(--s1) ${Math.round(8 + 64 * Math.min(1, x.level))}%, var(--surface))` : null;
+  const ink = x => (x.tone != null ? Math.abs(x.tone) : x.level || 0) > .62 ? 'var(--on-strong)' : null;
+  fill(el, h('div', {class: 'scroll heat-scroll'}, h('table', {class: 'heat'},
+    h('thead', {}, h('tr', {}, h('th', {}, corner), cols.map(c => h('th', {class: 'num', title: c.title || null}, c.label)), rowTotal ? h('th', {class: 'num total'}, 'Total') : null)),
+    h('tbody', {}, rows.map(r => h('tr', {},
+      h('th', {scope: 'row', class: 'heat-row'}, r.color ? h('i', {class: 'swatch', style: {background: r.color}}) : null, h('span', {}, r.label)),
+      cols.map(c => {
+        const x = cell(r, c);
+        if (!x || x.value == null) return h('td', {class: 'num heat-empty'}, '·');
+        const td = h('td', {class: ['num', onCell && 'clickable'], style: {background: shade(x), color: ink(x)}, tabindex: onCell ? 0 : null,
+          onclick: onCell ? () => onCell(r, c, x) : null}, x.text, x.sub ? h('span', {class: 'heat-sub'}, x.sub) : null);
+        if (x.tip) { td.addEventListener('pointermove', ev => showTip(ev, x.tip.title, x.tip.rows, x.tip.note)); td.addEventListener('pointerleave', hideTip); }
+        return td;
+      }),
+      rowTotal ? h('td', {class: 'num total'}, rowTotal(r)) : null))),
+    colTotal ? h('tfoot', {}, h('tr', {}, h('th', {}, 'Total'), cols.map(c => h('td', {class: 'num total'}, colTotal(c))), rowTotal ? h('td', {class: 'num total'}, rowTotal(null)) : null)) : null)));
+}
+
+// ---------- scatter on a time axis with optional trend lines and shaded bands ----------
+// points: [{t, v, color, faded, title, rows, note, data}], trends: [{color, pts: [[t, v]], label}], bands: [{a, b, label, cls}]
+export function timeScatter(el, {points, trends = [], bands = [], a, b, clock, fmt = compact, height = 300, onClick, emptyText}) {
+  if (!points.length) { fill(el, h('div', {class: 'empty'}, emptyText || 'No data')); return; }
+  const {svg, W, H} = frame(el, height, 'Scatter chart');
+  const L = 64, R = 14, T = 18, B = 30;
+  const ticks = niceTicks(Math.max(...points.map(p => p.v), ...trends.flatMap(t => t.pts.map(p => p[1])))), top = ticks[ticks.length - 1];
+  const X = t => L + (t - a) / (b - a) * (W - L - R), y = v => H - B - v / top * (H - T - B);
+  for (const band of bands) {
+    const x0 = X(Math.max(a, band.a)), x1 = X(Math.min(b, band.b));
+    if (x1 <= x0) continue;
+    svg.append(s('rect', {x: x0, y: T, width: x1 - x0, height: H - T - B, class: ['band', band.cls]}));
+    svg.append(s('text', {x: x0 + 6, y: T + 2, class: 'band-label'}, band.label));
+  }
+  yAxis(svg, ticks, y, L, R, W, fmt);
+  timeAxis(svg, a, b, clock, X, L, R, W, H, B);
+  for (const tr of trends) {
+    if (tr.pts.length < 2) continue;
+    svg.append(s('path', {d: tr.pts.map(([t, v], k) => `${k ? 'L' : 'M'}${X(t)},${y(v)}`).join(''), stroke: tr.color, class: 'line trend'}));
+  }
+  for (const p of points) {
+    const dot = s('circle', {cx: X(p.t), cy: y(p.v), r: p.r || 4.5, fill: p.color, class: ['pt', p.faded && 'faded']});
+    dot.addEventListener('pointermove', ev => { dot.classList.add('hover'); showTip(ev, p.title, p.rows || [], p.note); });
+    dot.addEventListener('pointerleave', () => { dot.classList.remove('hover'); hideTip(); });
+    if (onClick) { dot.style.cursor = 'pointer'; dot.addEventListener('click', () => onClick(p)); }
+    svg.append(dot);
+  }
+}
+
+// ---------- waterfall (SVG): start → contributions → end ----------
+// steps: [{label, value, kind: 'total' | 'delta', note}]
+export function waterfall(el, steps, {fmt = compact, height = 240} = {}) {
+  if (!steps.length) { fill(el, h('div', {class: 'empty'}, 'No data')); return; }
+  const {svg, W, H} = frame(el, height, 'Waterfall chart');
+  const L = 64, R = 12, T = 18, B = 34;
+  let run = 0;
+  const bars = steps.map(st => {
+    if (st.kind === 'total') { run = st.value; return {...st, from: 0, to: st.value}; }
+    const from = run; run += st.value; return {...st, from, to: run};
+  });
+  const ticks = niceTicks(Math.max(...bars.map(b => Math.max(b.from, b.to)))), top = ticks[ticks.length - 1];
+  const y = v => H - B - v / top * (H - T - B);
+  yAxis(svg, ticks, y, L, R, W, fmt);
+  const band = (W - L - R) / bars.length, cw = Math.min(96, band * .56);
+  bars.forEach((bar, i) => {
+    const cx = L + band * (i + .5), x = cx - cw / 2, y0 = y(Math.min(bar.from, bar.to)), y1 = y(Math.max(bar.from, bar.to));
+    const cls = bar.kind === 'total' ? 'wf-total' : bar.value >= 0 ? 'wf-up' : 'wf-down';
+    const rect = s('rect', {x, y: y1, width: cw, height: Math.max(1.5, y0 - y1), rx: 3, class: ['wf', cls]});
+    svg.append(rect);
+    if (i < bars.length - 1) svg.append(s('line', {x1: x + cw, x2: x + band, y1: y(bar.to), y2: y(bar.to), class: 'wf-link'}));
+    const text = bar.kind === 'total' ? fmt(bar.value) : (bar.value >= 0 ? '+' : '−') + fmt(Math.abs(bar.value));
+    svg.append(s('text', {x: cx, y: y1 - 6, class: 'reflabel', 'text-anchor': 'middle'}, text));
+    svg.append(s('text', {x: cx, y: H - B + 20, class: 'tick', 'text-anchor': 'middle'}, bar.label));
+    rect.addEventListener('pointermove', ev => showTip(ev, bar.label, [{label: bar.kind === 'total' ? 'total' : 'contribution', value: text}], bar.note));
+    rect.addEventListener('pointerleave', hideTip);
+  });
 }

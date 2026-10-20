@@ -65,11 +65,27 @@ This helps answer questions such as “Has my effective five-hour budget changed
 
 Quota logs provide usage percentages and reset times, rather than OpenAI's absolute quota configuration or a promised token allowance. These reports measure **observed capacity under your workload**. Model mix, cache use, voice, images, and activity on other devices can affect the result; compare the same filters and enough complete windows.
 
+## Focus on one question
+
+The sidebar has two parts. **Focus** pages answer one question each by combining several metrics; **Charts** pages keep every metric available for open-ended exploration. Filters and page controls stay in a bar pinned to the top while you scroll. Press <kbd>⌘K</kbd> (<kbd>Ctrl+K</kbd>) or <kbd>/</kbd> to open the command palette: jump to a page, switch the period, metric, profile, or theme, or refresh the data from the keyboard.
+
+### Period review
+
+How did a day, week, or month go? Step through periods with ‹ › (or the arrow keys) and compare the selected period with earlier ones: tokens, the share of the five-hour and weekly quotas burned, time spent at a limit, active hours, and a projection for an unfinished period. An unfinished period is compared with the previous one at the same elapsed point. A timeline shows the sessions you worked on, and change charts show which projects, models, and context sizes moved the total.
+
+### Quota watch
+
+Has your observed quota capacity changed? Recent windows (7, 14, or 30 days) are compared with a baseline, separately for each model, because models draw on the quota at different rates. A Mann–Whitney test on individual windows flags a change only when it is both significant (p < 0.05) and at least 8%. A model × week matrix, a scatter of every window, the number of five-hour windows that fit in a weekly quota, and the cache/output mix help separate a real limit change from a change in your workload.
+
+### Spend anatomy
+
+What is your usage made of? A pivot table splits usage by any two of model, context size, reasoning effort, project, session type, weekday, hour, or period; click a cell to list the sessions behind it. A waterfall splits the change against the previous period into more responses, larger context, and more output.
+
 ## Explore your usage
 
 ### Overview
 
-Check current quotas, estimated remaining tokens, period comparisons, model usage, token composition, and your activity heatmap. Click a chart bar to open that period, or a model to filter the dashboard.
+Check current quotas, estimated remaining tokens, period comparisons, model usage, token composition, and your activity heatmap. The usage chart can overlay the previous period of the same length. Click a chart bar to open that period, or a model to filter the dashboard.
 
 <img width="900" alt="Model shares and token composition" src="https://github.com/user-attachments/assets/8d225403-f48c-4fb7-a8d4-20c6be5143b7" />
 
@@ -196,6 +212,8 @@ This starts an isolated dashboard with Personal and Work example profiles. It us
 
 ```sh
 python3 -m unittest discover -s tests -v
+node tests/test_locale.mjs
+node tests/test_focus.mjs
 ```
 
-The app uses Python's standard library and bundled browser assets. See [validation instructions](VALIDATION.md) for the test scope and browser checks. Tests and demo data are synthetic.
+The app uses Python's standard library and bundled browser assets. Interface icons in `src/codex_usage/web/img/` are a generated PNG mask strip without metadata; the publication audit accepts PNG files only in that folder. See [validation instructions](VALIDATION.md) for the test scope and browser checks. Tests and demo data are synthetic.

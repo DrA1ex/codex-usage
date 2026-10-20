@@ -69,6 +69,23 @@ class PublicationTests(unittest.TestCase):
         self.assertTrue(any('machine-specific user path' in error for error in errors))
         self.assertFalse(any('fixture-person' in error for error in errors))
 
+    def test_png_artwork_is_allowed_only_without_metadata_in_the_image_folder(self):
+        def chunk(kind, data=b''):
+            return len(data).to_bytes(4, 'big') + kind + data + b'\0\0\0\0'
+        png = audit.PNG_SIGNATURE + chunk(b'IHDR', b'\0' * 13) + chunk(b'IDAT', b'x') + chunk(b'IEND')
+        folder = self.root / 'src/codex_usage/web/img'
+        folder.mkdir(parents=True)
+        (folder / 'icons.png').write_bytes(png)
+        files, errors = audit.audit()
+        self.assertEqual(errors, [])
+        self.assertIn('src/codex_usage/web/img/icons.png', files)
+        (folder / 'tagged.png').write_bytes(png[:-12] + chunk(b'tEXt', b'Author\0someone') + chunk(b'IEND'))
+        (self.root / 'src/codex_usage/stray.png').write_bytes(png)
+        _, errors = audit.audit()
+        self.assertTrue(any('tagged.png' in e and 'tEXt' in e for e in errors))
+        self.assertTrue(any('stray.png' in e and 'allowlist' in e for e in errors))
+        self.assertFalse(any('someone' in e for e in errors))
+
     def test_symlink_to_private_file_is_rejected(self):
         (self.root / 'private.txt').write_text('Synthetic private text')
         (self.root / 'README.md').symlink_to(self.root / 'private.txt')
@@ -96,6 +113,8 @@ class DemoTests(unittest.TestCase):
             self.assertIn('demo-report.html', '\n'.join(p.name for p in Path(folder).iterdir()))
             self.assertNotIn('src="/static/', html)
             self.assertNotIn('href="/static/style.css"', html)
+            self.assertNotIn('/static/img/', html)
+            self.assertIn('data:image/png;base64,', html)
 
 
 if __name__ == '__main__':
