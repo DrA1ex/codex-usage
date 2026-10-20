@@ -69,6 +69,8 @@ Quota logs provide usage percentages and reset times, rather than OpenAI's absol
 
 The sidebar has two parts. **Focus** pages answer one question each by combining several metrics; **Charts** pages keep every metric available for open-ended exploration. Filters and page controls stay in a bar pinned to the top while you scroll. Press <kbd>⌘K</kbd> (<kbd>Ctrl+K</kbd>) or <kbd>/</kbd> to open the command palette: jump to a page, switch the period, metric, profile, or theme, or refresh the data from the keyboard.
 
+Clicking a model or a project in a chart filters every page to it; click it again, or **Clear** in the bar, to remove the filter. The address keeps the current view (period, filters, metric, and the page's own settings), so a bookmark or a copied link — **⋯ → Copy link to this view** — reopens the same slice.
+
 ### Period review
 
 How did a day, week, or month go? Step through periods with ‹ › (or the arrow keys) and compare the selected period with earlier ones: tokens, the share of the five-hour and weekly quotas burned, time spent at a limit, active hours, and a projection for an unfinished period. An unfinished period is compared with the previous one at the same elapsed point. A timeline shows the sessions you worked on, and change charts show which projects, models, and context sizes moved the total.
@@ -81,11 +83,15 @@ Has your observed quota capacity changed? Recent windows (7, 14, or 30 days) are
 
 What is your usage made of? A pivot table splits usage by any two of model, context size, reasoning effort, project, session type, weekday, hour, or period; click a cell to list the sessions behind it. A waterfall splits the change against the previous period into more responses, larger context, and more output.
 
+### Context growth
+
+How does context build up inside a session, and what does a long context cost? One line per session shows the input context at every response; select a session to see what each of its responses cost (new input, cached re-reads of the context, output) and where compactions cut the context back. Page-level figures show the share of tokens spent past half of the model context window, the median context added per response, how much later responses cost than early ones, and an estimate of the re-reads each compaction avoided. A compaction is detected as a drop of more than 40% from at least 20K tokens of context.
+
 ## Explore your usage
 
 ### Overview
 
-Check current quotas, estimated remaining tokens, period comparisons, model usage, token composition, and your activity heatmap. The usage chart can overlay the previous period of the same length. Click a chart bar to open that period, or a model to filter the dashboard.
+Check current quotas with a forecast — at the pace of the last hour (five-hour quota) or day (weekly quota), does the counter reach 100% before the reset, and how much per day lasts until the weekly reset — plus estimated remaining tokens, period comparisons, model usage, token composition, and your activity heatmap. The usage chart can overlay the previous period of the same length. Click a chart bar to open that period, or a model to filter the dashboard.
 
 <img width="900" alt="Model shares and token composition" src="https://github.com/user-attachments/assets/8d225403-f48c-4fb7-a8d4-20c6be5143b7" />
 

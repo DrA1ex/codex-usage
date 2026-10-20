@@ -18,9 +18,9 @@ export const api = {
 };
 
 // ---------- state ----------
-const defaults = {
+export const defaults = {
   profile: null, range: {preset: '30d', from: null, to: null}, tz: null, tzPreference: 'auto', metric: 'total_tokens',
-  models: [], internal: false, gran: 'auto', theme: 'auto',
+  models: [], project: '', internal: false, gran: 'auto', theme: 'auto',
   quota: {key: null, threshold: 98, period: 3},
   analysis: {tolerance: 180, start_used_max: 2, dominance: .95, exclude: []},
   sessions: {q: '', project: '', kind: 'main', model: ''},
@@ -28,9 +28,10 @@ const defaults = {
   review: {unit: 'week', at: null, measure: 'tokens'},
   watch: {key: null, basis: 'total_tokens', sample: 'per', recent: 14, baseline: 60},
   anatomy: {rows: 'model', cols: 'context'},
+  context: {kind: 'main', session: null},
 };
 export const state = Object.assign(structuredClone(defaults), store.get('state', {}));
-for (const k of ['range', 'quota', 'analysis', 'sessions', 'review', 'watch', 'anatomy']) state[k] = Object.assign(structuredClone(defaults[k]), state[k] || {});
+for (const k of ['range', 'quota', 'analysis', 'sessions', 'review', 'watch', 'anatomy', 'context']) state[k] = Object.assign(structuredClone(defaults[k]), state[k] || {});
 export function saveState() { store.set('state', state); }
 
 // ctx.bar: page-specific controls that the sticky header shows next to the global filters.
@@ -50,6 +51,12 @@ export function prepare(raw) {
   const D = raw;
   D.mi = Object.fromEntries(D.metric_keys.map((k, i) => [k, i]));
   D.sessionIndex = new Map(D.sessions.map((sess, i) => [sess.id, i]));
+  // Project of every session, and all projects ordered by total tokens (for the global project filter).
+  D.sessionProject = D.sessions.map(sess => projectKey(sess.cwd || ''));
+  const totals = new Map();
+  for (const e of D.events) { const k = D.sessionProject[e[3]]; totals.set(k, (totals.get(k) || 0) + (e[5][D.mi.total_tokens] || 0)); }
+  const names = new Map(D.sessions.map((sess, i) => [D.sessionProject[i], sess.cwd ? projectName(sess.cwd) : 'No directory']));
+  D.projects = [...totals.entries()].sort((p, q) => q[1] - p[1]).map(([key, total]) => ({key, name: names.get(key), total}));
   D.quotaKeys = Object.keys(D.quota_series).sort((p, q) => Number(p.split('|')[1]) - Number(q.split('|')[1]));
   D.firstTs = D.events.length ? D.events[0][0] : null;
   D.lastTs = D.events.length ? D.events[D.events.length - 1][0] : null;
@@ -79,10 +86,10 @@ let memo = {key: null, value: null};
 // Filtered events for the global filter bar; every chart and table below reads from this one slice.
 export function view() {
   const D = ctx.D, r = resolveRange();
-  const key = JSON.stringify([D.generated_at, r.a, r.b, state.models, state.internal, state.tz]);
+  const key = JSON.stringify([D.generated_at, r.a, r.b, state.models, state.project, state.internal, state.tz]);
   if (memo.key === key) return memo.value;
   const models = state.models.length ? new Set(state.models.map(m => D.models.indexOf(m)).filter(i => i >= 0)) : null;
-  const keep = e => (state.internal || !e[2]) && (!models || models.has(e[1]));
+  const keep = filterEvent(models);
   const events = [], previous = [];
   const span = r.b - r.a;
   for (const e of D.events) {
@@ -92,18 +99,24 @@ export function view() {
   memo = {key, value: {...r, events, previous, models}};
   return memo.value;
 }
+// The global filters that apply to individual responses: internal reviews, models, project.
+function filterEvent(models) {
+  const D = ctx.D, project = state.project && D.projects?.some(p => p.key === state.project) ? state.project : null;
+  return e => (state.internal || !e[2]) && (!models || models.has(e[1])) && (!project || D.sessionProject[e[3]] === project);
+}
+
 export function invalidate() { memo = {key: null, value: null}; }
 
 // Events in [a, b) under the model/internal filters, independently of the global date range.
 export function eventsBetween(a, b) {
   const D = ctx.D;
-  const models = state.models.length ? new Set(state.models.map(m => D.models.indexOf(m))) : null;
+  const keep = filterEvent(state.models.length ? new Set(state.models.map(m => D.models.indexOf(m))) : null);
   let lo = 0, hi = D.events.length;
   while (lo < hi) { const mid = (lo + hi) >> 1; if (D.events[mid][0] < a) lo = mid + 1; else hi = mid; }
   const out = [];
   for (let i = lo; i < D.events.length && D.events[i][0] < b; i++) {
     const e = D.events[i];
-    if ((state.internal || !e[2]) && (!models || models.has(e[1]))) out.push(e);
+    if (keep(e)) out.push(e);
   }
   return out;
 }
@@ -163,6 +176,68 @@ export const CONTEXT_BUCKETS = [[0, 16e3, '< 16K'], [16e3, 32e3, '16–32K'], [3
 export function contextBucket(tokens) {
   for (let i = 0; i < CONTEXT_BUCKETS.length; i++) if (tokens < CONTEXT_BUCKETS[i][1]) return i;
   return CONTEXT_BUCKETS.length - 1;
+}
+
+// ---------- context growth inside one session ----------
+// A compaction is a sharp drop of the input context between consecutive responses.
+export const COMPACTION = {drop: .6, min: 20e3};
+// events: one session's events in time order; mi: metric index map (D.mi).
+export function sessionContext(events, mi) {
+  const n = events.length, steps = [], compactions = [], deltas = [];
+  let peak = 0, window = 0, tokens = 0, input = 0, cached = 0, output = 0, heavy = 0, heavySteps = 0, prev = 0;
+  for (let i = 0; i < n; i++) {
+    const e = events[i], x = e[5], context = e[6] || 0;
+    const total = x[mi.total_tokens] || 0, inp = x[mi.input_tokens] || 0, cache = x[mi.cached_input_tokens] || 0, out = x[mi.output_tokens] || 0;
+    tokens += total; input += inp; cached += cache; output += out;
+    if (e[7] > window) window = e[7];
+    if (context > peak) peak = context;
+    if (context && prev >= COMPACTION.min && context < prev * COMPACTION.drop) compactions.push({i, t: e[0], before: prev, after: context});
+    else if (context && prev && context > prev) deltas.push(context - prev);
+    if (context) prev = context;
+    steps.push({t: e[0], context: context || null, total, uncached: Math.max(0, inp - cache), cached: cache, output: out, model: e[1]});
+  }
+  // "Heavy" responses ran with more than half of the model context window (128K when unknown).
+  const half = window ? window / 2 : 128e3;
+  for (const st of steps) if (st.context >= half) { heavy += st.total; heavySteps++; }
+  // Context that a compaction removed would otherwise have been read again at every later step until the next one.
+  let avoided = 0;
+  compactions.forEach((cp, k) => { const until = compactions[k + 1]?.i ?? n; avoided += (cp.before - cp.after) * (until - cp.i); });
+  const q = Math.floor(n / 4), mean = list => list.reduce((a, st) => a + st.total, 0) / list.length;
+  const lateRatio = q >= 2 ? mean(steps.slice(n - q)) / (mean(steps.slice(0, q)) || NaN) : NaN;
+  deltas.sort((a, b) => a - b);
+  const growth = deltas.length ? deltas[Math.floor((deltas.length - 1) / 2)] : 0;
+  return {steps, n, peak, window, half, tokens, input, cached, output, heavy, heavySteps, compactions, avoided, growth, lateRatio,
+    first: events[0]?.[0], last: events[n - 1]?.[0]};
+}
+
+// ---------- quota pace and forecast ----------
+// points: one counter's series [[ts, used, reset, refill?]]; q: its latest snapshot {used, reset, ts, minutes}.
+// Pace is wall-clock growth over the lookback ending now (idle time counts), from the counter value at the
+// start of the lookback; default lookback: 1 h for the five-hour quota, 24 h for longer ones.
+export function quotaForecast(points, q, {now = Date.now() / 1000, lookback} = {}) {
+  lookback ??= q.minutes <= 300 ? 3600 : 86400;
+  const epoch = [];
+  for (let i = points.length - 1; i >= 0; i--) {
+    const p = points[i];
+    if (p[0] > q.ts) continue;
+    if (Math.abs(p[2] - q.reset) > 600) break;
+    epoch.unshift(p);
+    if (p[3]) break;
+  }
+  const start = Math.min(q.reset - q.minutes * 60, epoch[0]?.[0] ?? q.ts);
+  const since = Math.max(start, now - lookback);
+  // Counter value at `since`: the last snapshot at or before it, else a straight line from zero at the window start.
+  const prior = epoch.filter(p => p[0] <= since).pop();
+  const first = epoch[0] || [q.ts, q.used];
+  const base = since <= start ? 0 : prior ? prior[1] : first[1] * (since - start) / Math.max(1, first[0] - start);
+  const span = now - since;
+  const rate = span > 60 ? Math.max(0, (q.used - base) / span) : 0; // percentage points per second
+  const left = Math.max(0, 100 - q.used), toReset = Math.max(0, q.reset - now);
+  const hitAt = rate > 0 && q.used < 100 ? now + left / rate : null;
+  const hitsFirst = hitAt != null && hitAt < q.reset;
+  const atReset = Math.min(100, q.used + rate * toReset);
+  const days = toReset / 86400;
+  return {rate: rate * 3600, hitAt, hitsFirst, atReset, budgetPerDay: days >= 1 ? left / days : null, lookback: span};
 }
 
 export const val = (e, mi) => e[5][mi] || 0;

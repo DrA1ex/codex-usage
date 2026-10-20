@@ -7,7 +7,8 @@ import {columns, lines, timeline, deltaBars, heatTable, timeScatter, waterfall, 
 import {ctx, state, saveState, view, sum, sessionStats, eventsBetween, period, periodStart, periodShift, unitNames, quotaBurn,
   CONTEXT_BUCKETS, contextBucket, granularity, bucketer, buckets, card, tile, chartBox, segmented, select, table, color, modelName, modelDot,
   metricLabel, sessionKind, info, icon} from './core.js';
-import {sessionDetail, sessionTitle, windowDetail} from './pages.js';
+import {sessionDetail, sessionTitle, windowDetail, toggleProject, toggleModel} from './pages.js';
+import {contextLine} from './context.js';
 
 const fmtMetric = v => state.metric === 'responses' ? num(v) : compact(v);
 const signed = (v, digits = 0) => (v > 0 ? '+' : v < 0 ? '−' : '±') + num(Math.abs(v), digits);
@@ -199,15 +200,15 @@ export function review() {
     const m = new Map();
     for (const e of events) { const k = getKey(e); const x = m.get(k) || {now: 0, before: 0}; x.now += e[5][mi] || 0; m.set(k, x); }
     for (const e of prevEvents) { const k = getKey(e); const x = m.get(k) || {now: 0, before: 0}; x.before += e[5][mi] || 0; m.set(k, x); }
-    return [...m.entries()].map(([k, x]) => ({...label(k), delta: x.now - x.before, before: x.before}));
+    return [...m.entries()].map(([k, x]) => ({...label(k), key: k, delta: x.now - x.before, before: x.before}));
   };
   const projectOf = e => projectKey(D.sessions[e[3]].cwd);
   const byModelDiff = diff(e => e[1], k => ({label: D.models[k], color: color(D.models[k])}));
   const byProjectDiff = diff(projectOf, k => ({label: k ? projectName(k.startsWith('worktree:') ? '/' + k.slice(9) : k) : 'No directory', title: k}));
   const byContextDiff = diff(e => contextBucket(e[6]), k => ({label: CONTEXT_BUCKETS[k][2] + ' context'}));
   const changed = h('div', {class: 'grid three'},
-    card('Change by project', {sub: vsLabel}, chartBox(el => deltaBars(el, byProjectDiff, {fmt: fmtMetric}))),
-    card('Change by model', {sub: vsLabel}, chartBox(el => deltaBars(el, byModelDiff, {fmt: fmtMetric}))),
+    card('Change by project', {sub: `${vsLabel} · click to filter`}, chartBox(el => deltaBars(el, byProjectDiff, {fmt: fmtMetric, onClick: it => toggleProject(it.key)}))),
+    card('Change by model', {sub: `${vsLabel} · click to filter`}, chartBox(el => deltaBars(el, byModelDiff, {fmt: fmtMetric, onClick: it => toggleModel(D.models[it.key])}))),
     card('Change by context size', {sub: vsLabel}, chartBox(el => deltaBars(el, byContextDiff, {fmt: fmtMetric}))));
 
   // ---------- how the spend formed ----------
@@ -226,11 +227,8 @@ export function review() {
     const k = projectKey(st.session.cwd); const p = projects.get(k) || {key: k, label: projectName(st.session.cwd), value: 0};
     p.value += st.value; projects.set(k, p);
   }
-  const projCard = card('Projects', {sub: 'Click a project to list its sessions for this period'},
-    chartBox(el => barList(el, [...projects.values()].sort((p, q) => q.value - p.value), {fmt: fmtMetric, max: 8, onClick: it => {
-      Object.assign(state.range, {preset: 'custom', from: c.iso(P.startDay), to: c.iso(P.endDay - 1)});
-      Object.assign(state.sessions, {project: it.key, kind: 'all'}); saveState(); ctx.go('sessions');
-    }})));
+  const projCard = card('Projects', {sub: 'Click a project to filter every page to it'},
+    chartBox(el => barList(el, [...projects.values()].sort((p, q) => q.value - p.value), {fmt: fmtMetric, max: 8, onClick: it => toggleProject(it.key)})));
 
   return [headline, tiles, compareCard, innerCard, sessionsCard, changed, h('div', {class: 'grid'}, formed, projCard)];
 }
@@ -608,6 +606,7 @@ export function focusStrip() {
     {page: 'review', i: 0, title: 'Review this week', line: `${fmtMetric(tw)} so far · ${lw ? changeText(change(tw, lw)) + ' vs last week' : 'no data last week'}`},
     {page: 'watch', i: 1, title: 'Watch quota capacity', line: watchLine},
     {page: 'anatomy', i: 2, title: 'Break down the spend', line: `${share(big, sum(v.events, D.mi.total_tokens), 0)} of tokens at ≥ 128K context`},
+    {page: 'context', i: 16, title: 'Trace context growth', line: contextLine()},
   ];
   return h('div', {class: 'launchers'}, items.map(it => h('a', {class: 'launcher', href: '#/' + it.page},
     h('span', {class: 'launcher-icon'}, icon(it.i)),

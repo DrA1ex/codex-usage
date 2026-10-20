@@ -474,3 +474,66 @@ export function waterfall(el, steps, {fmt = compact, height = 240} = {}) {
     rect.addEventListener('pointerleave', hideTip);
   });
 }
+
+// ---------- trajectories: one line per series over a step index ----------
+// series: [{key, label, color, values: [number|null], marks: [step index], rows: i => tooltip rows}]
+// focus: key drawn on top in colour; the rest are thin neutral lines. refs: [{value, label}] horizontal guides.
+export function trajectories(el, {series, focus, fmt = compact, height = 300, yMax, refs = [], xLabel = 'response', onClick, emptyText}) {
+  const all = series.flatMap(sr => sr.values.filter(v => v != null));
+  if (!all.length) { fill(el, h('div', {class: 'empty'}, emptyText || 'No data')); return; }
+  const {svg, W, H} = frame(el, height, 'Trajectory chart');
+  const L = 64, R = 16, T = 14, B = 30;
+  const n = Math.max(2, ...series.map(sr => sr.values.length));
+  const ticks = niceTicks(Math.max(yMax || 0, ...all)), top = ticks[ticks.length - 1];
+  const y = v => H - B - v / top * (H - T - B), x = i => L + i / (n - 1) * (W - L - R);
+  yAxis(svg, ticks, y, L, R, W, fmt);
+  for (const v of niceTicks(n - 1, Math.max(2, Math.floor((W - L - R) / 90)))) {
+    if (v > n - 1) continue;
+    svg.append(s('text', {x: x(v), y: H - B + 18, class: 'tick', 'text-anchor': 'middle'}, num(v + 1)));
+  }
+  for (const ref of refs) {
+    svg.append(s('line', {x1: L, x2: W - R, y1: y(ref.value), y2: y(ref.value), class: 'refline dashed'}));
+    svg.append(s('text', {x: L + 6, y: y(ref.value) - 6, class: 'reflabel'}, ref.label));
+  }
+  const pathOf = values => {
+    let d = '', pen = false;
+    values.forEach((v, i) => { if (v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`; pen = true; });
+    return d;
+  };
+  const paths = new Map();
+  const ordered = [...series.filter(sr => sr.key !== focus), ...series.filter(sr => sr.key === focus)];
+  for (const sr of ordered) {
+    const on = sr.key === focus;
+    const p = s('path', {d: pathOf(sr.values), class: ['line', 'traj', on && 'on'], style: on ? {stroke: sr.color} : null});
+    svg.append(p); paths.set(sr.key, p);
+    if (on) for (const i of sr.marks || []) {
+      if (sr.values[i] == null) continue;
+      svg.append(s('line', {x1: x(i), x2: x(i), y1: y(sr.values[i - 1] ?? sr.values[i]), y2: y(sr.values[i]), class: 'traj-drop'}));
+      svg.append(s('circle', {cx: x(i), cy: y(sr.values[i]), r: 4, class: 'traj-mark'}));
+    }
+  }
+  const cross = s('line', {y1: T, y2: H - B, class: 'cross'});
+  svg.append(cross);
+  const hit = s('rect', {x: L, y: T, width: W - L - R, height: H - T - B, class: 'hit'});
+  let hover = null;
+  const nearest = ev => {
+    const box = svg.getBoundingClientRect(), px = (ev.clientX - box.left) * W / box.width, py = (ev.clientY - box.top) * H / box.height;
+    const i = Math.max(0, Math.min(n - 1, Math.round((px - L) / (W - L - R) * (n - 1))));
+    let best = null, dist = Infinity;
+    for (const sr of series) { const v = sr.values[i]; if (v == null) continue; const d = Math.abs(y(v) - py); if (d < dist) { dist = d; best = sr; } }
+    return {i, sr: dist < 40 ? best : null};
+  };
+  hit.addEventListener('pointermove', ev => {
+    const {i, sr} = nearest(ev);
+    cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.classList.add('on');
+    if (hover && hover !== sr) paths.get(hover.key)?.classList.remove('hover');
+    hover = sr;
+    if (!sr) { hideTip(); hit.style.cursor = ''; return; }
+    paths.get(sr.key)?.classList.add('hover');
+    hit.style.cursor = onClick ? 'pointer' : '';
+    showTip(ev, sr.label, [{label: 'context', value: fmt(sr.values[i])}, ...(sr.rows ? sr.rows(i) : [])], `${xLabel} ${num(i + 1)} of ${num(sr.values.length)}`);
+  });
+  hit.addEventListener('pointerleave', () => { cross.classList.remove('on'); if (hover) paths.get(hover.key)?.classList.remove('hover'); hover = null; hideTip(); });
+  if (onClick) hit.addEventListener('click', ev => { const {sr} = nearest(ev); if (sr) onClick(sr); });
+  svg.append(hit);
+}

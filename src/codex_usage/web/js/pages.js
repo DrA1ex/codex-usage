@@ -2,7 +2,7 @@
 import {locales, h, fill, num, compact, pct, share, duration, ago, quotaName, minutesLabel, median, projectName, projectKey, shortPath, plural} from './util.js';
 import {columns, lines, quotaChart, timeColumns, heatmap, barList, composition, legend, hideTip} from './charts.js';
 import {ctx, state, saveState, view, sum, byModel, sessionStats, projectStats, granularity, bucketer, buckets, granLabels,
-  card, tile, chartBox, segmented, table, color, modelName, modelDot, metricLabel, metricUnit, sourceNames, sessionKind, info, select} from './core.js';
+  card, tile, chartBox, segmented, table, color, modelName, modelDot, metricLabel, metricUnit, sourceNames, sessionKind, info, select, quotaForecast} from './core.js';
 import {focusStrip} from './focus.js';
 
 const weekdayFormat = new Intl.DateTimeFormat(locales, {weekday: 'short', timeZone: 'UTC'});
@@ -10,6 +10,10 @@ const WEEKDAYS = Array.from({length: 7}, (_, day) => weekdayFormat.format(new Da
 const fmtMetric = v => state.metric === 'responses' ? num(v) : compact(v);
 
 function grow(...children) { return h('div', {class: 'grid'}, children); }
+
+// Cross-filter: clicking a project anywhere narrows every page to it; clicking it again clears the filter.
+export function toggleProject(key) { state.project = state.project === key ? '' : key; saveState(); ctx.render(); }
+export function toggleModel(model) { state.models = state.models.length === 1 && state.models[0] === model ? [] : [model]; saveState(); ctx.render(); }
 
 // Bucket size lives in the sticky bar so it stays reachable next to the charts it changes.
 export function granBar() {
@@ -45,19 +49,37 @@ export function quotaMeters({compactView = false} = {}) {
     const level = used >= 90 ? 'critical' : used >= 70 ? 'warning' : 'good';
     const est = recentPerPercent(q.minutes);
     const left = est.n >= 3 && !expired ? est.value * (100 - used) : null;
+    const f = !compactView && !expired ? quotaForecast(D.quota_series[`${q.limit_id}|${q.minutes}`] || [], q, {now}) : null;
     return h('div', {class: ['meter-card', level]},
       h('div', {class: 'meter-top'}, h('span', {class: 'meter-name'}, quotaName(q.minutes)),
         q.limit_id !== 'codex' ? h('span', {class: 'pill'}, q.limit_id) : null,
         q.plan ? h('span', {class: 'pill'}, q.plan) : null),
       h('div', {class: 'meter-value'}, h('b', {}, num(used) + '%'), h('span', {class: 'muted'}, ' used')),
       h('div', {class: 'meter', role: 'meter', 'aria-valuenow': used, 'aria-valuemin': 0, 'aria-valuemax': 100},
-        h('div', {class: 'meter-fill', style: {width: Math.min(100, used) + '%'}})),
+        h('div', {class: 'meter-fill', style: {width: Math.min(100, used) + '%'}}),
+        f && f.atReset > used + .5 ? h('div', {class: 'meter-proj', style: {left: Math.min(100, used) + '%', width: (f.atReset - Math.min(100, used)) + '%'}, title: `Projected by the reset: ${num(f.atReset)}%`}) : null),
       h('div', {class: 'meter-note'}, expired
         ? `Window ended ${c.dateTime(q.reset)} — quota restored`
         : `Resets in ${duration(q.reset - now)} · ${c.dateTime(q.reset)}`),
+      f ? forecastNote(f, q, now) : null,
       !compactView && left != null ? h('div', {class: 'meter-note'}, `≈ ${compact(left)} tokens until 100% at typical usage`, info(`Estimate: median tokens per 1% across ${est.n} windows over 30 days × remaining percentage. Depends on the model, cache and other features sharing the budget.`)) : null,
       h('div', {class: 'meter-foot muted'}, `data as of ${c.dateTime(q.ts)} (${ago(q.ts)})`));
   }));
+}
+
+// Pace over the recent past of the current window, projected to the reset (see quotaForecast).
+function forecastNote(f, q, now) {
+  const pace = `+${num(f.rate, f.rate < 10 ? 1 : 0)}%/h (last ${duration(f.lookback)})`;
+  const why = 'Pace = growth of this counter over the last hour (five-hour quota) or day (longer quotas), idle time included, extended in a straight line. It assumes you keep working the way you did.';
+  const budget = f.budgetPerDay != null && q.used < 100 ? h('div', {class: 'meter-note'}, 'To last until the reset: ', h('b', {}, `≤ ${num(f.budgetPerDay, 1)}%`), ' per day') : null;
+  if (q.used >= 100) return null;
+  if (f.rate < .05) return [h('div', {class: 'meter-note forecast'}, h('span', {class: 'chip ok'}, 'idle'), ' No growth recently; the counter holds until the reset', info(why)), budget];
+  if (f.hitsFirst) {
+    const at = f.hitAt;
+    return [h('div', {class: 'meter-note forecast'}, h('span', {class: 'chip bad'}, 'limit first'),
+      ' 100% in ', h('b', {}, duration(at - now)), ` at ${pace}, `, h('b', {}, duration(q.reset - at)), ' before the reset', info(why)), budget];
+  }
+  return [h('div', {class: 'meter-note forecast'}, h('span', {class: 'chip ok'}, 'reset first'), ` ≈ ${num(f.atReset)}% by the reset at ${pace}`, info(why)), budget];
 }
 
 // ---------- overview ----------
@@ -111,7 +133,7 @@ export function overview() {
   const models = byModel(v.events, mi);
   const modelCard = card('Models', {sub: 'Click a model to filter the dashboard'},
     chartBox(el => barList(el, models.map(m => ({label: m.model, value: m.value, color: color(m.model), model: m.model})), {
-      fmt: fmtMetric, onClick: it => { state.models = state.models.length === 1 && state.models[0] === it.model ? [] : [it.model]; saveState(); ctx.render(); }})));
+      fmt: fmtMetric, onClick: it => toggleModel(it.model)})));
 
   const parts = [
     {label: 'Uncached input', value: inp - cached, color: 'var(--c1)', note: 'new context; the most expensive part'},
@@ -129,9 +151,9 @@ export function overview() {
 
   const stats = sessionStats(v.events, mi);
   const projects = projectStats(stats);
-  const projCard = card('Projects', {sub: 'By session working directory', actions: h('a', {href: '#/projects', class: 'link'}, 'All projects →')},
+  const projCard = card('Projects', {sub: 'By session working directory. Click a project to filter the dashboard', actions: h('a', {href: '#/projects', class: 'link'}, 'All projects →')},
     chartBox(el => barList(el, projects.map(p => ({label: p.name, sub: projectSub(p), value: p.value, key: p.key, title: [...p.paths].join('\n')})), {
-      fmt: fmtMetric, max: 8, onClick: it => { Object.assign(state.sessions, {project: it.key, kind: 'all'}); saveState(); ctx.go('sessions'); }})));
+      fmt: fmtMetric, max: 8, onClick: it => toggleProject(it.key)})));
 
   const top = [...stats.values()].sort((p, q) => q.value - p.value).slice(0, 8);
   const topCard = card('Highest-usage sessions', {actions: h('a', {href: '#/sessions', class: 'link'}, 'All sessions →')},
@@ -393,11 +415,9 @@ export function sessions() {
   const list = all.filter(st => {
     const sess = st.session;
     if (f.kind !== 'all' && sessionKind(sess) !== f.kind) return false;
-    if (f.project && projectKey(sess.cwd) !== f.project) return false;
     if (q && ![sess.title, sess.cwd, sess.id, sess.branch].some(x => x && x.toLowerCase().includes(q))) return false;
     return true;
   });
-  const projects = projectStats(stats);
   const set = patch => { Object.assign(state.sessions, patch); saveState(); ctx.render(); };
   const counts = {main: 0, subagent: 0, review: 0};
   for (const st of all) counts[sessionKind(st.session)]++;
@@ -406,8 +426,7 @@ export function sessions() {
   search.id = 'session-search';
   search.classList.add('bar-search');
   ctx.bar = h('div', {class: 'bar-group'}, search,
-    segmented([['main', `Main · ${counts.main}`], ['subagent', `Subagents · ${counts.subagent}`], ['review', `Reviews · ${counts.review}`], ['all', 'All']], f.kind, k => set({kind: k}), {class: 'small', label: 'Session type'}),
-    select([['', 'All projects'], ...projects.map(p => [p.key, `${p.name} · ${compact(p.value)}`])], f.project, p => set({project: p}), {'aria-label': 'Project', class: 'bar-select'}));
+    segmented([['main', `Main · ${counts.main}`], ['subagent', `Subagents · ${counts.subagent}`], ['review', `Reviews · ${counts.review}`], ['all', 'All']], f.kind, k => set({kind: k}), {class: 'small', label: 'Session type'}));
   const total = list.reduce((n, st) => n + st.value, 0);
   return [
     h('div', {class: 'tiles'},
@@ -465,7 +484,7 @@ export function projectsPage() {
   const stats = sessionStats(v.events, D.mi[state.metric]);
   const projects = projectStats(stats);
   const total = projects.reduce((n, p) => n + p.value, 0);
-  const open = p => { Object.assign(state.sessions, {project: p.key, kind: 'all'}); saveState(); ctx.go('sessions'); };
+  const open = p => { state.project = p.key; state.sessions.kind = 'all'; saveState(); ctx.go('sessions'); };
   return [
     card('Usage by project', {sub: 'Projects are session working directories. Subagents and reviews are assigned to their own directories.'},
       chartBox(el => barList(el, projects.map(p => ({label: p.name, sub: projectSub(p), value: p.value, key: p.key, title: [...p.paths].join('\n')})), {fmt: fmtMetric, max: 15, onClick: open}))),

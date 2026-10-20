@@ -41,3 +41,34 @@ assert.equal(core.contextBucket(15_999), 0);
 assert.equal(core.contextBucket(128_000), 4);
 assert.equal(core.contextBucket(2e6), core.CONTEXT_BUCKETS.length - 1);
 console.log('focus checks passed');
+
+// Quota forecast: wall-clock pace over the lookback, from the counter value at its start.
+{
+  const reset = 20000, q = {used: 40, reset, ts: 3600 * 3, minutes: 300}; // window started at 2000
+  const points = [[2600, 5, reset], [7200, 30, reset], [10800, 40, reset]];
+  const f = core.quotaForecast(points, q, {now: 10800});
+  close(f.rate, 10, 1e-9, 'pace from the last snapshot before the lookback (30% → 40% in one hour)');
+  close(f.hitAt, 10800 + 6 * 3600, 1e-6, '60 points left at 10%/h');
+  assert.equal(f.hitsFirst, false, 'reset at 20000 comes before 32400');
+  close(f.atReset, 40 + 10 * (reset - 10800) / 3600, 1e-9, 'projected level at the reset');
+  const idle = core.quotaForecast(points, q, {now: 10800 + 3600});
+  assert.equal(idle.rate, 0, 'an idle hour means no pace');
+  const other = core.quotaForecast([[100, 90, 9999], ...points], q, {now: 10800, lookback: 86400});
+  close(other.rate, 40 / ((10800 - 2000) / 3600), 1e-9, 'snapshots of another reset epoch are ignored; whole window from zero');
+}
+
+// Context growth: compactions, heavy share, avoided re-reads, late/early ratio.
+{
+  const mi = {total_tokens: 0, input_tokens: 1, cached_input_tokens: 2, output_tokens: 3};
+  const contexts = [10e3, 40e3, 80e3, 120e3, 30e3, 60e3, 90e3, 150e3];
+  const events = contexts.map((c, i) => [i * 60, 0, 0, 0, 0, [c + 1000, c, c * .9, 1000], c, 200e3]);
+  const a = core.sessionContext(events, mi);
+  assert.equal(a.n, 8);
+  assert.equal(a.peak, 150e3);
+  assert.deepEqual(a.compactions.map(cp => [cp.i, cp.before, cp.after]), [[4, 120e3, 30e3]], 'one drop of more than 40%');
+  assert.equal(a.avoided, 90e3 * 4, 'removed context × remaining responses');
+  assert.equal(a.heavySteps, 2, '120K and 150K are past half of the 200K window');
+  assert.equal(a.growth, 30e3, 'median positive step, compaction excluded');
+  close(a.lateRatio, (91e3 + 151e3) / (11e3 + 41e3), 1e-9, 'last quarter over first quarter');
+}
+console.log('forecast and context checks passed');
