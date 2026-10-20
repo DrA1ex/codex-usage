@@ -71,4 +71,20 @@ console.log('focus checks passed');
   assert.equal(a.growth, 30e3, 'median positive step, compaction excluded');
   close(a.lateRatio, (91e3 + 151e3) / (11e3 + 41e3), 1e-9, 'last quarter over first quarter');
 }
-console.log('forecast and context checks passed');
+// Quota attribution: each counter increase is split across the responses since the previous snapshot by tokens.
+{
+  const points = [[1000, 10, 18500], [2000, 30, 18500], [3000, 30, 18500], [4000, 40, 18500]];
+  const ev = (ts, tokens, internal = 0) => [ts, 0, internal, 0, 0, [tokens], 0, 0];
+  const events = [ev(400, 999), ev(600, 100), ev(900, 300), ev(1500, 200), ev(1600, 500, 1)];
+  const A = core.attributeQuota(points, events, 0, 300, 0, 5000, e => !e[2]);
+  close(A.share.get(1), 2.5, 1e-9, 'first increase, pro-rata by tokens');
+  close(A.share.get(2), 7.5, 1e-9, 'first increase, pro-rata by tokens');
+  close(A.share.get(3), 20, 1e-9, 'filtered response gets nothing, the rest takes the increase');
+  assert(!A.share.has(0) && !A.share.has(4), 'before the window start, filtered out');
+  assert.equal(A.attributed, 30);
+  assert.equal(A.unattributed, 10, 'an increase with no responses stays unexplained');
+  const late = core.attributeQuota(points, events, 0, 300, 1500, 5000);
+  assert.equal(late.attributed, 20, 'only snapshots inside [a, b)');
+  close(late.share.get(4), 20 * 500 / 700, 1e-9, 'no filter: internal responses count');
+}
+console.log('forecast, context and attribution checks passed');

@@ -9,6 +9,7 @@ import {ctx, state, saveState, view, sum, sessionStats, eventsBetween, period, p
   metricLabel, sessionKind, info, icon} from './core.js';
 import {sessionDetail, sessionTitle, windowDetail, toggleProject, toggleModel} from './pages.js';
 import {contextLine} from './context.js';
+import {budgetLine} from './budget.js';
 
 const fmtMetric = v => state.metric === 'responses' ? num(v) : compact(v);
 const signed = (v, digits = 0) => (v > 0 ? '+' : v < 0 ? '−' : '±') + num(Math.abs(v), digits);
@@ -604,6 +605,7 @@ export function signals() {
   const v = view();
   let big = 0; for (const e of v.events) if (e[6] >= 128e3) big += e[5][D.mi.total_tokens] || 0;
   const items = [
+    {page: 'budget', i: 20, title: 'Budget the quota', line: budgetLine()},
     {page: 'review', i: 0, title: 'Review this week', line: `${fmtMetric(tw)} so far · ${lw ? changeText(change(tw, lw)) + ' vs last week' : 'no data last week'}`},
     {page: 'watch', i: 1, title: 'Watch quota capacity', line: watchLine},
     {page: 'anatomy', i: 2, title: 'Break down the spend', line: `${share(big, sum(v.events, D.mi.total_tokens), 0)} of tokens at ≥ 128K context`},

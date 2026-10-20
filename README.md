@@ -75,6 +75,12 @@ Clicking a model or a project in a chart filters every page to it; click it agai
 
 How did a day, week, or month go? Step through periods with ‹ › (or the arrow keys) and compare the selected period with earlier ones: tokens, the share of the five-hour and weekly quotas burned, time spent at a limit, active hours, and a projection for an unfinished period. An unfinished period is compared with the previous one at the same elapsed point. A timeline shows the sessions you worked on, and change charts show which projects, models, and context sizes moved the total.
 
+### Quota budget
+
+Will your quota last until the reset, what is spending it, and what would make it last longer? For each live counter a chart shows the current window with the pace extended to the reset, and the card lists when the counter reaches 100%, how long you would wait for the reset, what is left (also in tokens, from the tokens per 1% of the last seven days), and the pace and daily budget that make it last exactly until the reset.
+
+To see what spent the quota, every increase of the counter between two recorded snapshots is split across the responses recorded in that interval, in proportion to their tokens; increases with no responses — another device, voice, or another profile on the same account — stay unexplained. The split is shown by session, model (with tokens per 1%), project, reasoning effort, and session type, for the current window or the selected period. Automatic checks then point out what stands out — a pace that runs out before the reset, a large share at long context, one dominant session, a model that costs more quota per token, mostly high effort, heavy subagent or review use, a low cache share, time at a limit, or a large unexplained share — each with the numbers behind it and a suggestion.
+
 ### Quota watch
 
 Has your observed quota capacity changed? Recent windows (7, 14, or 30 days) are compared with a baseline, separately for each model, because models draw on the quota at different rates. A Mann–Whitney test on individual windows flags a change only when it is both significant (p < 0.05) and at least 8%. A model × week matrix, a scatter of every window, the number of five-hour windows that fit in a weekly quota, and the cache/output mix help separate a real limit change from a change in your workload.

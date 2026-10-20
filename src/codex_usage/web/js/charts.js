@@ -567,3 +567,43 @@ export function miniColumns(el, {values, labels, titles = labels, fmt = compact,
     })),
     h('div', {class: 'minicols-ticks'}, labels.map(t => h('span', {}, t)))));
 }
+
+// ---------- one quota window: counter so far, projection to the reset ----------
+// points: [[ts, used]] inside the window; projection: {from: [ts, used], to: [ts, used]} drawn dashed.
+export function burnChart(el, {points, start, reset, now, projection, clock, height = 200, label = 'used'}) {
+  const {svg, W, H} = frame(el, height, 'Quota window chart');
+  const L = 44, R = 14, T = 14, B = 28;
+  const X = t => L + (Math.min(reset, Math.max(start, t)) - start) / (reset - start) * (W - L - R), y = v => H - B - Math.min(100, v) / 100 * (H - T - B);
+  yAxis(svg, [0, 25, 50, 75, 100], y, L, R, W, v => v + '%');
+  timeAxis(svg, start, reset, clock, X, L, R, W, H, B);
+  svg.append(s('rect', {x: X(now), y: T, width: Math.max(0, X(reset) - X(now)), height: H - T - B, class: 'band'}));
+  svg.append(s('line', {x1: X(now), x2: X(now), y1: T, y2: H - B, class: 'refline dashed'}));
+  svg.append(s('text', {x: X(now) + 5, y: T + 2, class: 'band-label'}, 'now'));
+  if (points.length) {
+    // Step line: the counter holds its value until the next snapshot.
+    let d = `M${X(start)},${y(0)}`;
+    for (const [t, v] of points) d += `H${X(t)}V${y(v)}`;
+    d += `H${X(Math.min(now, reset))}`;
+    svg.append(s('path', {d: d + `V${y(0)}H${X(start)}Z`, class: 'burn-area'}));
+    svg.append(s('path', {d, class: 'line burn-line'}));
+  }
+  if (projection) {
+    const [t0, v0] = projection.from, [t1, v1] = projection.to;
+    svg.append(s('path', {d: `M${X(t0)},${y(v0)}L${X(t1)},${y(v1)}`, class: ['line', 'burn-proj', v1 >= 100 && 'over']}));
+    if (v1 >= 100 && t1 < reset) {
+      svg.append(s('circle', {cx: X(t1), cy: y(100), r: 4, class: 'burn-hit'}));
+      const right = X(t1) < W - R - 150;
+      svg.append(s('text', {x: X(t1) + (right ? 9 : -9), y: y(100) + 20, class: 'reflabel', 'text-anchor': right ? 'start' : 'end'}, `100% ${clock.dateTime(t1)}`));
+    } else svg.append(s('text', {x: X(t1) - 4, y: y(v1) - 8, class: 'reflabel', 'text-anchor': 'end'}, `≈ ${num(v1)}% at reset`));
+  }
+  const hit = s('rect', {x: L, y: T, width: W - L - R, height: H - T - B, class: 'hit'});
+  hit.addEventListener('pointermove', ev => {
+    const box = svg.getBoundingClientRect(), t = start + ((ev.clientX - box.left) * W / box.width - L) / (W - L - R) * (reset - start);
+    const past = points.filter(p => p[0] <= t).pop();
+    const rows = t <= now ? [{label, value: num(past ? past[1] : 0) + '%'}]
+      : projection ? [{label: 'projected', value: num(Math.min(100, projection.from[1] + (projection.to[1] - projection.from[1]) * Math.min(1, (t - projection.from[0]) / Math.max(1, projection.to[0] - projection.from[0])))) + '%'}] : [];
+    showTip(ev, clock.dateTime(t), rows);
+  });
+  hit.addEventListener('pointerleave', hideTip);
+  svg.append(hit);
+}

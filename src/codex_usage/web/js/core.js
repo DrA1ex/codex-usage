@@ -29,9 +29,10 @@ export const defaults = {
   watch: {key: null, basis: 'total_tokens', sample: 'per', recent: 14, baseline: 60},
   anatomy: {rows: 'model', cols: 'context'},
   context: {kind: 'main', session: null},
+  budget: {key: null, scope: 'window'},
 };
 export const state = Object.assign(structuredClone(defaults), store.get('state', {}));
-for (const k of ['range', 'quota', 'analysis', 'sessions', 'review', 'watch', 'anatomy', 'context']) state[k] = Object.assign(structuredClone(defaults[k]), state[k] || {});
+for (const k of ['range', 'quota', 'analysis', 'sessions', 'review', 'watch', 'anatomy', 'context', 'budget']) state[k] = Object.assign(structuredClone(defaults[k]), state[k] || {});
 export function saveState() { store.set('state', state); }
 
 // ctx.bar: page-specific controls that the sticky header shows next to the global filters.
@@ -238,6 +239,35 @@ export function quotaForecast(points, q, {now = Date.now() / 1000, lookback} = {
   const atReset = Math.min(100, q.used + rate * toReset);
   const days = toReset / 86400;
   return {rate: rate * 3600, hitAt, hitsFirst, atReset, budgetPerDay: days >= 1 ? left / days : null, lookback: span};
+}
+
+// ---------- which responses spent the quota ----------
+// Each increase of the counter between two snapshots is split across the responses recorded in that
+// interval, in proportion to their total tokens. points: one counter's series; events: D.events (time order);
+// keep(e): which responses may receive a share. Returns per-event shares (event index → percentage points)
+// and the increase that no response could explain (e.g. usage on another device).
+export function attributeQuota(points, events, mi, minutes, a, b, keep = () => true) {
+  const share = new Map();
+  let attributed = 0, unattributed = 0, j = 0, prev = null;
+  for (const p of points) {
+    const fresh = !prev || p[3] || Math.abs(p[2] - prev[2]) > 600;
+    const inc = fresh ? p[1] : Math.max(0, p[1] - prev[1]);
+    // A new epoch can only contain responses after its window started.
+    const from = fresh ? Math.max(prev ? prev[0] : -Infinity, p[2] - minutes * 60) : prev[0];
+    prev = p;
+    if (p[0] < a || p[0] >= b || !inc) continue;
+    while (j < events.length && events[j][0] <= from) j++;
+    let k = j, tokens = 0;
+    for (; k < events.length && events[k][0] <= p[0]; k++) if (keep(events[k])) tokens += events[k][5][mi] || 0;
+    if (!tokens) { unattributed += inc; continue; }
+    for (let i = j; i < k; i++) if (keep(events[i])) {
+      const t = events[i][5][mi] || 0;
+      if (t) share.set(i, (share.get(i) || 0) + inc * t / tokens);
+    }
+    attributed += inc;
+    j = k;
+  }
+  return {share, attributed, unattributed};
 }
 
 export const val = (e, mi) => e[5][mi] || 0;

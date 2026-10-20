@@ -4,6 +4,7 @@ import {ctx, state, defaults as DEFAULTS, saveState, api, prepare, newClock, inv
 import {overview, quota, modelsPage, sessions, projectsPage} from './pages.js';
 import {review, watch, anatomy} from './focus.js';
 import {contextPage} from './context.js';
+import {budget} from './budget.js';
 import {profilesPage, commandsPage, dataPage, watchJob, profileTitle} from './tools.js';
 
 // icon: index in /static/img/icons.png; scope: which global filters the page reads.
@@ -11,6 +12,8 @@ const ALL = {range: true, models: true, project: true, metric: true};
 const PAGES = {
   review: {title: 'Period review', icon: 0, group: 'Focus', render: review, data: true, scope: {models: true, project: true, metric: true},
     lead: 'How a day, week or month went, compared with the ones before it.'},
+  budget: {title: 'Quota budget', icon: 20, group: 'Focus', render: budget, data: true, scope: {range: true},
+    lead: 'Will your quota last until the reset, what is spending it, and what would make it last longer.'},
   watch: {title: 'Quota watch', icon: 1, group: 'Focus', render: watch, data: true, scope: {metric: true},
     lead: 'Has the capacity of your Codex quota changed? Recent windows against a baseline, per model.'},
   anatomy: {title: 'Spend anatomy', icon: 2, group: 'Focus', render: anatomy, data: true, scope: ALL,
@@ -34,7 +37,7 @@ let page = 'overview', loading = null, scanJob = null, autoTimer = null;
 // The view lives in the hash query, so a link or a bookmark reopens the same slice: #/review?range=30d&unit=week.
 // A hash without a query (a plain navigation link) keeps the current state.
 const PAGE_STATE = {review: ['unit', 'at', 'measure'], watch: ['key', 'sample', 'recent', 'baseline'], anatomy: ['rows', 'cols'],
-  quota: ['key', 'threshold', 'period'], sessions: ['q', 'kind'], context: ['kind', 'session']};
+  quota: ['key', 'threshold', 'period'], sessions: ['q', 'kind'], context: ['kind', 'session'], budget: ['key', 'scope']};
 
 function writeUrl() {
   const q = new URLSearchParams();
