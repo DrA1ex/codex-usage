@@ -86,6 +86,19 @@ class PublicationTests(unittest.TestCase):
         self.assertTrue(any('stray.png' in e and 'allowlist' in e for e in errors))
         self.assertFalse(any('someone' in e for e in errors))
 
+    def test_workflows_are_allowed_only_as_yaml_in_the_workflow_folder(self):
+        folder = self.root / '.github/workflows'
+        folder.mkdir(parents=True)
+        (folder / 'pages.yml').write_text('name: Demo site')
+        files, errors = audit.audit()
+        self.assertEqual(errors, [])
+        self.assertIn('.github/workflows/pages.yml', files)
+        (folder / 'notes.md').write_text('Synthetic note')
+        (self.root / '.github/settings.yml').write_text('name: Synthetic')
+        _, errors = audit.audit()
+        self.assertTrue(any('notes.md' in e and 'allowlist' in e for e in errors))
+        self.assertTrue(any('settings.yml' in e and 'allowlist' in e for e in errors))
+
     def test_symlink_to_private_file_is_rejected(self):
         (self.root / 'private.txt').write_text('Synthetic private text')
         (self.root / 'README.md').symlink_to(self.root / 'private.txt')
@@ -115,6 +128,12 @@ class DemoTests(unittest.TestCase):
             self.assertNotIn('href="/static/style.css"', html)
             self.assertNotIn('/static/img/', html)
             self.assertIn('data:image/png;base64,', html)
+
+    def test_pages_build_serves_the_dashboard_at_the_site_root(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = demo.build(Path(folder), pages=True)
+            self.assertEqual((Path(folder) / 'index.html').read_text(), target.read_text())
+            self.assertTrue((Path(folder) / '.nojekyll').exists())
 
 
 if __name__ == '__main__':

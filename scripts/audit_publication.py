@@ -16,6 +16,8 @@ SOURCE_SUFFIXES = {".py", ".js", ".mjs", ".html", ".css", ".md", ".sh"}
 SOURCE_DIRS = {"src", "tests", "docs", "scripts"}
 # Generated UI artwork: PNG only, only here, and without metadata chunks that could carry private text.
 IMAGE_DIR = "src/codex_usage/web/img/"
+# CI workflows: YAML only, directly in this folder.
+WORKFLOW_DIR = ".github/workflows/"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PNG_ALLOWED_CHUNKS = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND", b"gAMA", b"sRGB", b"pHYs"}
 MAX_IMAGE_BYTES = 512 * 1024
@@ -57,9 +59,14 @@ def image_errors(name: str, data: bytes) -> list[str]:
     return errors
 
 
+def is_workflow(name: str) -> bool:
+    rest = name[len(WORKFLOW_DIR):]
+    return name.startswith(WORKFLOW_DIR) and rest.endswith(".yml") and "/" not in rest
+
+
 def allowed(name: str) -> bool:
     path = Path(name)
-    return name in ROOT_FILES or is_image(name) or (len(path.parts) > 1 and path.parts[0] in SOURCE_DIRS
+    return name in ROOT_FILES or is_image(name) or is_workflow(name) or (len(path.parts) > 1 and path.parts[0] in SOURCE_DIRS
                                  and not any(p.startswith(".") or p == "__pycache__" for p in path.parts)
                                  and path.suffix in SOURCE_SUFFIXES)
 

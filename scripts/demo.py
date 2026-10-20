@@ -107,7 +107,7 @@ def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
     return history
 
 
-def build(output: Path) -> Path:
+def build(output: Path, pages: bool = False) -> Path:
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     output.mkdir(parents=True, exist_ok=True)
     profiles, datasets, comparisons = [], {}, []
@@ -188,6 +188,10 @@ export const api = {
     report = prepare_report(histories[0], options)
     write_report(report, output / "demo-report.html")
     export_tables(report, output / "demo-report")
+    if pages:
+        # Static hosting: serve the dashboard at the site root and skip Jekyll processing.
+        (output / "index.html").write_text(html)
+        (output / ".nojekyll").write_text("")
     return target
 
 
@@ -196,9 +200,10 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=ROOT / "demo-data")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--build-only", action="store_true", help="Generate the standalone demo without starting a server")
+    parser.add_argument("--pages", action="store_true", help="Also write index.html and .nojekyll for static hosting")
     parser.add_argument("--open", action="store_true")
     args = parser.parse_args()
-    target = build(args.output.resolve())
+    target = build(args.output.resolve(), args.pages)
     print(f"Synthetic dashboard: {target}")
     if args.build_only:
         return

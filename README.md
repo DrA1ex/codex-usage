@@ -2,6 +2,8 @@
 
 Understand how many tokens actually fit into your Codex usage limits. Codex Usage analyzes local session history to measure observed five-hour and weekly quota capacity, compare models, and track how your usable budget changes over time.
 
+**[Try the live demo →](https://dra1ex.github.io/codex-usage/)** The full dashboard with synthetic data runs in your browser; nothing to install. A [sample offline report](https://dra1ex.github.io/codex-usage/demo-report.html) is available too.
+
 - Measure tokens consumed before recorded quota exhaustion, using whole windows with observed starts.
 - Compare effective capacity across models and dates, with sample sizes and model breakdowns.
 - Investigate unexpected capacity changes, incomplete windows, and early resets.
@@ -204,6 +206,8 @@ Each report produces:
 Set `--export-dir` to choose another export directory. Both the dashboard and the report can download CSV tables. The CLI stops on unreadable files by default; `--skip-unreadable` explicitly allows skipping them. The dashboard records skipped files in **Data**.
 
 ## Try synthetic demo data
+
+The [live demo](https://dra1ex.github.io/codex-usage/) is this same synthetic dashboard, rebuilt from `main` on every push and once a day by the **Demo site** workflow and published to GitHub Pages. It is read-only: profile scans, report generation, and other actions that need the local server are disabled. To run it locally:
 
 ```sh
 python3 scripts/demo.py --open
