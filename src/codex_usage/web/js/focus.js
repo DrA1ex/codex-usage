@@ -6,10 +6,11 @@ import {locales, h, num, compact, pct, share, duration, plural, median, quantile
 import {columns, lines, timeline, deltaBars, heatTable, timeScatter, waterfall, sparkline, barList, composition, legend} from './charts.js';
 import {ctx, state, saveState, view, sum, sessionStats, eventsBetween, period, periodStart, periodShift, unitNames, quotaBurn,
   CONTEXT_BUCKETS, contextBucket, granularity, bucketer, buckets, card, tile, chartBox, segmented, select, table, color, modelName, modelDot,
-  metricLabel, sessionKind, info, icon} from './core.js';
+  metricLabel, sessionKind, info, icon, windowChanges} from './core.js';
 import {sessionDetail, sessionTitle, windowDetail, toggleProject, toggleModel} from './pages.js';
 import {contextLine} from './context.js';
 import {budgetLine} from './budget.js';
+import {workLine} from './work.js';
 
 const fmtMetric = v => state.metric === 'responses' ? num(v) : compact(v);
 const signed = (v, digits = 0) => (v > 0 ? '+' : v < 0 ? '−' : '±') + num(Math.abs(v), digits);
@@ -249,6 +250,15 @@ function sampleValue(w, sample) {
   return v ? v / used : null;
 }
 
+// New work in a window: uncached input + output, per 1% or per window like sampleValue.
+function freshValue(w, sample) {
+  const m = k => (w.metrics[k] || 0) + (state.internal ? (w.internal_metrics[k] || 0) : 0);
+  const v = m('input_tokens') - m('cached_input_tokens') + m('output_tokens');
+  if (sample === 'cap') return v;
+  const used = w.max_used - w.first_used;
+  return used >= 10 && v ? v / used : null;
+}
+
 const pText = p => p < .001 ? 'p < 0.001' : `p = ${num(p, p < .01 ? 3 : 2)}`;
 const MIXED = new Set(['__all__', '__mixed__']);
 
@@ -318,12 +328,24 @@ export function watch() {
     return `${what} (${changeText(v.ratio)}, ${pText(v.p)}).`;
   };
   const flagged = real.filter(g => g.v.code === 'down' || g.v.code === 'up' || g.v.code === 'maybe');
+  // Total or input tokens per 1% rise with cached re-reads of a longer context, so check the new work alongside.
+  const shownGroup = flagged[0] || lead;
+  let caveat = null;
+  if (shownGroup && shownGroup.v.ratio > .03 && ['total_tokens', 'input_tokens', 'cached_input_tokens'].includes(state.metric)) {
+    const fresh = list => median(list.map(x => freshValue(x.w, sample)).filter(x => x != null));
+    const rec = shownGroup.xs.filter(x => x.w.start >= recentA), old = shownGroup.xs.filter(x => x.w.start >= baseA && x.w.start < recentA);
+    const fr = rec.length && old.length ? fresh(rec) / fresh(old) - 1 : NaN;
+    if (fr < -.03) caveat = h('p', {class: 'small'}, h('span', {class: 'chip warn'}, 'cache'), ' ',
+      `But fresh work — uncached input + output — moved ${changeText(fr)} ${unitLabel} for ${groupName(shownGroup.model)}: the extra tokens are cached re-reads of a longer context, not more work. `,
+      h('a', {class: 'link', href: '#/work'}, 'Check work per quota'));
+  }
   const headline = card(null, {class: 'headline'}, h('div', {class: 'headline-body'},
     h('div', {class: 'headline-text'},
       h('div', {class: 'eyebrow'}, `${minutes === 300 ? 'Five-hour' : 'Weekly'} quota · last ${W.recent} days vs ${W.baseline ? `the ${W.baseline} days before` : 'all earlier history'}`),
       h('p', {class: 'lede'}, flagged.length
         ? [h('b', {}, `${flagged.length} ${plural(flagged.length, 'model shows', 'models show')} a capacity shift. `), say(flagged[0])]
         : [h('b', {}, 'No clear capacity change. '), say(lead)]),
+      caveat,
       h('p', {class: 'muted small'}, 'Comparisons stay within one model, because models draw on the quota at different rates. Mann–Whitney test on individual windows; p < 0.05 with at least an 8% shift counts as a change.'))));
 
   // ---------- verdict cards ----------
@@ -410,8 +432,9 @@ export function watch() {
   const notes = [
     ...[...D.modelFirst.entries()].filter(([, t]) => t >= a).map(([m, t]) => ({t, kind: 'model', text: `First response from ${D.models[m]}`, color: color(D.models[m])})),
     ...D.resets.filter(r => r.early && r.ts >= a && r.limit_id === limitId && r.minutes === minutes).map(r => ({t: r.ts, kind: 'reset', text: `Early ${qname} reset at ${num(r.used_before)}%`})),
+    ...(D.windowChanges ??= windowChanges(D.events)).filter(x => x.t >= a).map(x => ({t: x.t, kind: 'window', text: `Context window of ${D.models[x.model]}: ${compact(x.from)} → ${compact(x.to)}`, color: color(D.models[x.model])})),
   ].sort((p, q) => q.t - p.t).slice(0, 14);
-  const notesCard = card('Things that changed at the same time', {sub: 'New models and early resets in the charted range often explain a step in capacity.'},
+  const notesCard = card('Things that changed at the same time', {sub: 'New models, context-window changes and early resets in the charted range often explain a step in capacity.'},
     notes.length ? h('ul', {class: 'notes'}, notes.map(n => h('li', {},
       h('span', {class: 'muted small mono'}, c.dateTime(n.t)), n.color ? h('i', {class: 'swatch', style: {background: n.color}}) : h('span', {class: 'chip warn'}, 'reset'), n.text)))
       : h('div', {class: 'empty'}, 'Nothing notable in this range'));
@@ -608,6 +631,7 @@ export function signals() {
     {page: 'budget', i: 20, title: 'Budget the quota', line: budgetLine()},
     {page: 'review', i: 0, title: 'Review this week', line: `${fmtMetric(tw)} so far · ${lw ? changeText(change(tw, lw)) + ' vs last week' : 'no data last week'}`},
     {page: 'watch', i: 1, title: 'Watch quota capacity', line: watchLine},
+    {page: 'work', i: 12, title: 'Check work per quota', line: workLine()},
     {page: 'anatomy', i: 2, title: 'Break down the spend', line: `${share(big, sum(v.events, D.mi.total_tokens), 0)} of tokens at ≥ 128K context`},
     {page: 'context', i: 16, title: 'Trace context growth', line: contextLine()},
   ];

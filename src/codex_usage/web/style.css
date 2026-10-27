@@ -208,7 +208,7 @@ input[type=checkbox] { accent-color: var(--ink); width: 14px; height: 14px; marg
 .bar-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .bar-label, .inline-field { font: 500 10.5px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .inline-field { display: inline-flex; align-items: center; gap: 6px; }
-.inline-field select { text-transform: none; letter-spacing: 0; font: 500 12.5px var(--font); color: var(--ink); }
+.inline-field select, .inline-field input { text-transform: none; letter-spacing: 0; font: 500 12.5px var(--font); color: var(--ink); }
 .bar select, .bar input[type=date], .bar input[type=search], .bar .btn-like { min-height: 28px; padding-top: 3px; padding-bottom: 3px; font-size: 12.5px; }
 .bar-select { max-width: 200px; }
 .project-select { max-width: 160px; }

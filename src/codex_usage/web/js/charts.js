@@ -114,15 +114,25 @@ export function columns(el, {buckets, series, values, fmt = compact, height = 30
 }
 
 // ---------- multi-series lines with crosshair ----------
-export function lines(el, {labels, series, fmt = compact, height = 280, yMax, emptyText, area = false}) {
+// marks: [{i, label}] vertical guides at a (fractional) label index; ref: {value, label} horizontal line.
+export function lines(el, {labels, series, fmt = compact, height = 280, yMax, emptyText, area = false, marks = [], ref}) {
   const all = series.flatMap(sr => sr.values.filter(v => v != null));
   if (!labels.length || !all.length) { fill(el, h('div', {class: 'empty'}, emptyText || 'No data')); return; }
   const {svg, W, H} = frame(el, height, 'Line chart');
   const L = 64, R = 16, T = 14, B = 34;
-  const ticks = yMax ? niceTicks(yMax) : niceTicks(Math.max(...all)), top = ticks[ticks.length - 1];
+  const ticks = yMax ? niceTicks(yMax) : niceTicks(Math.max(...all, ref?.value || 0)), top = ticks[ticks.length - 1];
   const y = v => H - B - v / top * (H - T - B);
   const n = labels.length, x = i => n === 1 ? (L + W - R) / 2 : L + i * (W - L - R) / (n - 1);
   yAxis(svg, ticks, y, L, R, W, fmt);
+  if (ref && ref.value > 0) {
+    svg.append(s('line', {x1: L, x2: W - R, y1: y(ref.value), y2: y(ref.value), class: 'refline'}));
+    svg.append(s('text', {x: L + 6, y: y(ref.value) - 6, class: 'reflabel'}, ref.label));
+  }
+  for (const m of marks) {
+    const mx = Math.max(L, Math.min(W - R, x(m.i)));
+    svg.append(s('line', {x1: mx, x2: mx, y1: T, y2: H - B, class: 'refline dashed'}));
+    if (m.label) svg.append(s('text', {x: mx + 5, y: T + 10, class: 'reflabel'}, m.label));
+  }
   const stride = Math.max(1, Math.ceil(n / Math.max(2, Math.floor((W - L - R) / 80))));
   labels.forEach((lb, i) => { if (i % stride === 0) svg.append(s('text', {x: x(i), y: H - B + 20, class: 'tick', 'text-anchor': 'middle'}, lb.short || lb.label)); });
   const cross = s('line', {y1: T, y2: H - B, class: 'cross'});

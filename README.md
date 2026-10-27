@@ -87,6 +87,12 @@ To see what spent the quota, every increase of the counter between two recorded 
 
 Has your observed quota capacity changed? Recent windows (7, 14, or 30 days) are compared with a baseline, separately for each model, because models draw on the quota at different rates. A Mann–Whitney test on individual windows flags a change only when it is both significant (p < 0.05) and at least 8%. A model × week matrix, a scatter of every window, the number of five-hour windows that fit in a weekly quota, and the cache/output mix help separate a real limit change from a change in your workload.
 
+### Work per quota
+
+Did the quota really get more generous, or is more of it spent re-reading context? A larger default context window means fewer compactions and longer contexts, so every response re-reads more cached input. Total tokens per 1% of the quota then rise even when less new work fits into each percent. This page splits tokens per 1% into cached input, uncached input, and output, and compares the periods before and after a split date: by default the latest detected change of the context window the models report (a new value held for 20 responses in a row), otherwise the middle of the date range.
+
+The headline flags **Looks more generous, less work fits** when total tokens per 1% rise while fresh work (uncached input + output) or output per 1% fall. Charts index every measure to the period before the split, show what one percent buys, plot every quota window, and track context per response, cached tokens re-read per output token, and compactions per 100 responses. A cost-weighted measure counts uncached input, cached input, and output with selectable weights (default 1 : 0.1 : 8, typical API price ratios); it is an estimate of relative cost, not a price. **Quota watch** also lists context-window changes and warns when a capacity increase in total tokens comes with less fresh work.
+
 ### Spend anatomy
 
 What is your usage made of? A pivot table splits usage by any two of model, context size, reasoning effort, project, session type, weekday, hour, or period; click a cell to list the sessions behind it. A waterfall splits the change against the previous period into more responses, larger context, and more output.

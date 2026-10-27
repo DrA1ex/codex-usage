@@ -5,6 +5,7 @@ import {overview, quota, modelsPage, sessions, projectsPage} from './pages.js';
 import {review, watch, anatomy} from './focus.js';
 import {contextPage} from './context.js';
 import {budget} from './budget.js';
+import {workPage} from './work.js';
 import {profilesPage, commandsPage, dataPage, watchJob, profileTitle} from './tools.js';
 
 // icon: index in /static/img/icons.png; scope: which global filters the page reads.
@@ -16,6 +17,8 @@ const PAGES = {
     lead: 'Will your quota last until the reset, what is spending it, and what would make it last longer.'},
   watch: {title: 'Quota watch', icon: 1, group: 'Focus', render: watch, data: true, scope: {metric: true},
     lead: 'Has the capacity of your Codex quota changed? Recent windows against a baseline, per model.'},
+  work: {title: 'Work per quota', icon: 12, group: 'Focus', render: workPage, data: true, scope: {range: true, models: true, project: true},
+    lead: 'Does more of each percent go to re-reading a longer context? Total tokens per 1% against new input and output per 1%.'},
   anatomy: {title: 'Spend anatomy', icon: 2, group: 'Focus', render: anatomy, data: true, scope: ALL,
     lead: 'What your usage is made of, and what drove it up or down.'},
   context: {title: 'Context growth', icon: 16, group: 'Focus', render: contextPage, data: true, scope: ALL,
@@ -37,7 +40,8 @@ let page = 'overview', loading = null, scanJob = null, autoTimer = null;
 // The view lives in the hash query, so a link or a bookmark reopens the same slice: #/review?range=30d&unit=week.
 // A hash without a query (a plain navigation link) keeps the current state.
 const PAGE_STATE = {review: ['unit', 'at', 'measure'], watch: ['key', 'sample', 'recent', 'baseline'], anatomy: ['rows', 'cols'],
-  quota: ['key', 'threshold', 'period'], sessions: ['q', 'kind'], context: ['kind', 'session'], budget: ['key', 'scope']};
+  quota: ['key', 'threshold', 'period'], sessions: ['q', 'kind'], context: ['kind', 'session'], budget: ['key', 'scope'],
+  work: ['key', 'split', 'weights', 'measure']};
 
 function writeUrl() {
   const q = new URLSearchParams();

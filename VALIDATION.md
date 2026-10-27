@@ -20,7 +20,7 @@ Start the isolated synthetic demo:
 python3 scripts/demo.py --open
 ```
 
-Check Overview, Quotas, Models, Sessions, Projects, Profiles, Commands, and Data. Confirm that charts render in both themes, date and model filters apply across pages, session and quota drawers open, CSV tables download, and profile comparison uses only fictional data.
+Check Overview, Work per quota, Quotas, Models, Sessions, Projects, Profiles, Commands, and Data. Confirm that charts render in both themes, date and model filters apply across pages, session and quota drawers open, CSV tables download, and profile comparison uses only fictional data.
 
 The optional `tests/browser_smoke.mjs` script validates a generated standalone report against a disposable Chrome DevTools endpoint. It checks the initial aggregates, 100% thresholds, output-token usage, weekly windows, model and date filters, and JavaScript runtime exceptions:
 

@@ -88,3 +88,24 @@ console.log('focus checks passed');
   close(late.share.get(4), 20 * 500 / 700, 1e-9, 'no filter: internal responses count');
 }
 console.log('forecast, context and attribution checks passed');
+// Context-window changes need a sustained run of the new value; work per 1% splits cached re-reads from new work.
+{
+  const ev = (ts, model, window) => [ts, model, 0, 0, 0, [], 0, window];
+  const events = [];
+  for (let i = 0; i < 30; i++) events.push(ev(i, 0, 272e3));
+  events.push(ev(30, 0, 400e3), ev(31, 0, 272e3)); // a stray response is not a change
+  for (let i = 40; i < 70; i++) events.push(ev(i, 0, 400e3), ev(i + .5, 1, 128e3));
+  const changes = core.windowChanges(events);
+  assert.deepEqual(changes, [{model: 0, t: 40, from: 272e3, to: 400e3}], 'one change of model 0, dated at its first response');
+  assert.deepEqual(core.windowChanges(events, 40), [], 'shorter runs do not count');
+
+  const r = core.workRates({total_tokens: 1100, input_tokens: 1000, cached_input_tokens: 900, output_tokens: 100, responses: 5}, 10);
+  assert.equal(r.total, 110);
+  assert.equal(r.cached, 90);
+  assert.equal(r.uncached, 10);
+  assert.equal(r.fresh, 20, 'uncached input + output');
+  close(r.weighted, (100 + 900 * .1 + 100 * 8) / 10, 1e-9, 'API-ratio weights by default');
+  assert.equal(r.responses, .5);
+  assert.equal(core.workRates({input_tokens: 10}, 0).total, null, 'no usage, no rate');
+}
+console.log('context window and work-rate checks passed');

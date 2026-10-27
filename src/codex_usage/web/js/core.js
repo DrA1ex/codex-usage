@@ -30,9 +30,10 @@ export const defaults = {
   anatomy: {rows: 'model', cols: 'context'},
   context: {kind: 'main', session: null},
   budget: {key: null, scope: 'window'},
+  work: {key: null, split: '', weights: '0.1:8', measure: 'fresh'},
 };
 export const state = Object.assign(structuredClone(defaults), store.get('state', {}));
-for (const k of ['range', 'quota', 'analysis', 'sessions', 'review', 'watch', 'anatomy', 'context', 'budget']) state[k] = Object.assign(structuredClone(defaults[k]), state[k] || {});
+for (const k of ['range', 'quota', 'analysis', 'sessions', 'review', 'watch', 'anatomy', 'context', 'budget', 'work']) state[k] = Object.assign(structuredClone(defaults[k]), state[k] || {});
 export function saveState() { store.set('state', state); }
 
 // ctx.bar: page-specific controls that the sticky header shows next to the global filters.
@@ -209,6 +210,34 @@ export function sessionContext(events, mi) {
   const growth = deltas.length ? deltas[Math.floor((deltas.length - 1) / 2)] : 0;
   return {steps, n, peak, window, half, tokens, input, cached, output, heavy, heavySteps, compactions, avoided, growth, lateRatio,
     first: events[0]?.[0], last: events[n - 1]?.[0]};
+}
+
+// ---------- context window changes ----------
+// The context window a model reports can change with a new default. A change counts once the new value
+// holds for `run` consecutive responses of that model, and is dated at the first of them.
+export function windowChanges(events, run = 20) {
+  const byModel = new Map(), out = [];
+  for (const e of events) {
+    const w = e[7];
+    if (!w) continue;
+    const st = byModel.get(e[1]);
+    if (!st) { byModel.set(e[1], {cur: w, cand: null, n: 0, t: 0}); continue; }
+    if (w === st.cur) { st.cand = null; st.n = 0; continue; }
+    if (w !== st.cand) { st.cand = w; st.n = 0; st.t = e[0]; }
+    if (++st.n >= run) { out.push({model: e[1], t: st.t, from: st.cur, to: w}); st.cur = w; st.cand = null; st.n = 0; }
+  }
+  return out;
+}
+
+// ---------- work per percent of quota ----------
+// Tokens of one quota window per percentage point it used, split by kind. Cached input is context re-read
+// from the cache; "fresh" (uncached input + output) is the new work. weights: {cached, output} relative to
+// uncached input, e.g. API price ratios.
+export function workRates(m, used, weights = {cached: .1, output: 8}) {
+  const input = m.input_tokens || 0, cached = Math.min(input, m.cached_input_tokens || 0), output = m.output_tokens || 0;
+  const uncached = input - cached, per = x => used > 0 ? x / used : null;
+  return {total: per(m.total_tokens ?? input + output), cached: per(cached), uncached: per(uncached), output: per(output),
+    fresh: per(uncached + output), weighted: per(uncached + cached * weights.cached + output * weights.output), responses: per(m.responses || 0)};
 }
 
 // ---------- quota pace and forecast ----------

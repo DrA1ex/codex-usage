@@ -52,6 +52,9 @@ def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
             starts.append(date + (9 + slot * 5) * 3600 + rng.choice([0, 900, 1800]))
     starts.append(now - 7200)
     weekly_base = midnight - 35 * 86400
+    # Twelve days ago the models start reporting a larger default context window: context grows further
+    # before a compaction, so each step re-reads more cached context and fewer steps fit into the quota.
+    window_change = midnight - 12 * 86400
     for i, start in enumerate(starts):
         model = rng.choices(models, weights=[.6, .25, .15])[0]
         sid = f"demo-{seed:02d}-session-{i:03d}"
@@ -67,21 +70,36 @@ def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
         effort_weights = [.1, .85, .05] if model == "gpt-6-astra" else [.65, .1, .25] if model == "gpt-6-luna" else [.35, .55, .1]
         effort = rng.choices(["medium", "high", "low"], weights=effort_weights)[0]
         reasoning_share = {"high": .8, "medium": .45, "low": .15}[effort]
-        steps = rng.randint(60, 160)
-        for step in range(steps):
-            progress = step / (steps - 1)
-            ts = start + window_span * progress
-            inp = int((45000 + progress * 180000) * (1.1 if model == "gpt-6-astra" else .8 if model == "gpt-6-luna" else 1) * scale * rng.uniform(.8, 1.2))
+        large = start >= window_change
+        context_window = 524288 if large else 262144
+        weight = 1.1 if model == "gpt-6-astra" else .8 if model == "gpt-6-luna" else 1
+        context = int(30000 * scale)
+        # The quota is drawn by cost: cached input is cheap, output expensive, so a response with a
+        # longer context uses more of it and the window fills in fewer steps.
+        per_pct = rng.uniform(46000, 58000) * scale * weight
+        interval = window_span / rng.randint(90, 130)
+        spent = 0.0
+        for step in range(400):
+            if spent >= peak or step * interval > 17000:
+                break
+            ts = start + step * interval
+            added = int(rng.randint(1500, 4200) * weight * scale)
+            context += added
+            if context > context_window * .8:
+                context = int(context * rng.uniform(.18, .3))  # compaction
+                added = context
+            inp = context
             out = int(rng.randint(1800, 6500) * scale)
-            cached = int(inp * rng.uniform(.62, .91))
+            cached = max(0, inp - added - int(rng.uniform(.01, .08) * inp))
+            spent = min(peak, spent + ((inp - cached) + cached * .1 + out * 8) / per_pct)
             history.events.append({"ts": ts, "model": model, "session": sid, "internal": False,
                                    "effort": effort, "context": inp,
-                                   "context_window": 524288, "file": "synthetic.jsonl", "line": step + 1,
+                                   "context_window": context_window, "file": "synthetic.jsonl", "line": step + 1,
                                    "counts": {"input_tokens": inp, "output_tokens": out, "total_tokens": inp + out,
                                               "cached_input_tokens": cached, "uncached_input_tokens": inp - cached,
                                               "reasoning_output_tokens": int(out * reasoning_share), "responses": 1}})
             history.snapshots.append({"ts": ts, "model": model, "internal": False, "limit_id": "codex",
-                                      "minutes": 300, "reset": reset, "used": round(peak * progress, 1),
+                                      "minutes": 300, "reset": reset, "used": round(spent, 1),
                                       "plan": plan, "file": "synthetic.jsonl", "line": step + 1})
             week = int((ts - weekly_base) // (7 * 86400))
             week_start = weekly_base + week * 7 * 86400
@@ -97,7 +115,7 @@ def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
             for step in range(8):
                 history.events.append({"ts": start + 1800 + step * 150, "model": model, "session": child,
                                        "internal": False, "effort": "medium", "context": 40000 + step * 2500,
-                                       "context_window": 524288, "file": "synthetic.jsonl", "line": step + 1,
+                                       "context_window": 524288 if start >= window_change else 262144, "file": "synthetic.jsonl", "line": step + 1,
                                        "counts": {"input_tokens": 45000, "cached_input_tokens": 30000,
                                                   "uncached_input_tokens": 15000, "output_tokens": 2500,
                                                   "reasoning_output_tokens": 1200, "total_tokens": 47500, "responses": 1}})
