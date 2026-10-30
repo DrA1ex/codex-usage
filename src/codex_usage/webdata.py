@@ -1,6 +1,7 @@
 """Compact datasets for the web UI. All aggregation by date happens in the browser."""
 from __future__ import annotations
 
+import bisect
 import datetime as dt
 from collections import defaultdict
 
@@ -85,9 +86,27 @@ def build_dataset(history: History, profile: dict, *, tolerance_seconds: int = 1
     session_ids = {s: i for i, s in enumerate(used_sessions)}
     efforts = sorted({e.get("effort") or "—" for e in events})
     effort_ids = {e: i for i, e in enumerate(efforts)}
+    # Turns of the sessions in the dataset; each timed response points at the turn it belongs to.
+    turns = [t for t in history.turns if t["session"] in session_ids]
+    starts = defaultdict(list)
+    for i, t in enumerate(turns):
+        starts[t["session"]].append((t["start"], i))
+
+    def turn_of(event: dict) -> int:
+        own = starts.get(event["session"])
+        if not own:
+            return -1
+        k = bisect.bisect_right(own, (event["ts"], len(turns))) - 1
+        return own[k][1] if k >= 0 and event["ts"] <= turns[own[k][1]]["end"] + 2 else -1
+
+    def seconds(value) -> float | None:
+        return round(value, 2) if isinstance(value, (int, float)) else None
+
     compact = [[round(e["ts"], 3), model_ids[e["model"]], int(e["internal"]), session_ids[e["session"]],
                 effort_ids[e.get("effort") or "—"], [e["counts"].get(k, 0) for k in metric_keys],
-                e.get("context") or 0, e.get("context_window") or 0] for e in events]
+                e.get("context") or 0, e.get("context_window") or 0,
+                seconds(e.get("generation")), seconds(e.get("tools")), int(bool(e.get("compaction"))), turn_of(e)]
+               for e in events]
     sessions = []
     for sid in used_sessions:
         meta = history.sessions.get(sid, {})
@@ -99,7 +118,7 @@ def build_dataset(history: History, profile: dict, *, tolerance_seconds: int = 1
         window.pop("source", None)
     plans = sorted({s["plan"] for s in history.snapshots if s["plan"]})
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "profile": profile,
         "generated_at": dt.datetime.now(dt.timezone.utc).timestamp(),
         "models": models,
@@ -107,6 +126,8 @@ def build_dataset(history: History, profile: dict, *, tolerance_seconds: int = 1
         "metric_labels": {k: METRICS.get(k, k) for k in metric_keys},
         "efforts": efforts,
         "events": compact,
+        "turns": [[round(t["start"], 3), round(t["end"] - t["start"], 2), session_ids[t["session"]],
+                   seconds(t.get("ttft")), int(bool(t.get("aborted")))] for t in turns],
         "sessions": sessions,
         "windows": windows,
         "resets": resets,

@@ -31,9 +31,10 @@ export const defaults = {
   context: {kind: 'main', session: null},
   budget: {key: null, scope: 'window'},
   work: {key: null, split: '', weights: '0.1:8', measure: 'fresh'},
+  speed: {split: '', view: 'hours'},
 };
 export const state = Object.assign(structuredClone(defaults), store.get('state', {}));
-for (const k of ['range', 'quota', 'analysis', 'sessions', 'review', 'watch', 'anatomy', 'context', 'budget', 'work']) state[k] = Object.assign(structuredClone(defaults[k]), state[k] || {});
+for (const k of ['range', 'quota', 'analysis', 'sessions', 'review', 'watch', 'anatomy', 'context', 'budget', 'work', 'speed']) state[k] = Object.assign(structuredClone(defaults[k]), state[k] || {});
 export function saveState() { store.set('state', state); }
 
 // ctx.bar: page-specific controls that the sticky header shows next to the global filters.
@@ -238,6 +239,153 @@ export function workRates(m, used, weights = {cached: .1, output: 8}) {
   const uncached = input - cached, per = x => used > 0 ? x / used : null;
   return {total: per(m.total_tokens ?? input + output), cached: per(cached), uncached: per(uncached), output: per(output),
     fresh: per(uncached + output), weighted: per(uncached + cached * weights.cached + output * weights.output), responses: per(m.responses || 0)};
+}
+
+// ---------- task speed ----------
+// Events carry e[8] generation seconds, e[9] seconds spent on the tools the response called, e[10] = 1 for a
+// compaction call and e[11] the index of its turn in D.turns ([start, duration, session, ttft, aborted]).
+// A task is one turn of a main session; its wall-clock time splits into these parts.
+export const PARTS = [
+  {key: 'model', label: 'Model generation', color: 'var(--s1)'},
+  {key: 'compaction', label: 'Compaction', color: 'var(--s4)'},
+  {key: 'review', label: 'Auto-review', color: 'var(--s5)'},
+  {key: 'subagent', label: 'Subagents', color: 'var(--s7)'},
+  {key: 'tools', label: 'Tools, commands and approvals', color: 'var(--s2)'},
+  {key: 'other', label: 'Other', color: 'var(--muted)'},
+];
+// Responses with a known generation time; compactions are a different kind of call and are left out.
+export const timed = e => e[8] != null && e[8] > 0 && !e[10];
+
+// Output tokens per second of generation, pooled over responses.
+export function genSpeed(events, mi) {
+  let out = 0, gen = 0, n = 0;
+  for (const e of events) if (timed(e)) { out += e[5][mi.output_tokens] || 0; gen += e[8]; n++; }
+  return {speed: gen ? out / gen : null, out, gen, n};
+}
+
+// Pooled speed per model × context size, the cells that like-for-like comparisons are made in.
+export const MIN_CELL = 10;
+export const cellKey = e => e[1] * CONTEXT_BUCKETS.length + contextBucket(e[6] || 0);
+export function speedCells(events, mi) {
+  const out = new Map();
+  for (const e of events) {
+    if (!timed(e)) continue;
+    const k = cellKey(e), c = out.get(k) || {out: 0, gen: 0, n: 0};
+    c.out += e[5][mi.output_tokens] || 0; c.gen += e[8]; c.n++;
+    out.set(k, c);
+  }
+  return out;
+}
+
+// Like-for-like change of generation speed: the time the later responses would have taken at the earlier speed of
+// the same model and context size, against the time they took. A bigger context alone (longer prefill) or a switch
+// to a slower model does not count as slower inference. coverage: share of later generation time compared.
+export function speedIndex(before, after, mi, base = speedCells(before, mi)) {
+  let expected = 0, actual = 0, all = 0;
+  for (const e of after) {
+    if (!timed(e)) continue;
+    all += e[8];
+    const c = base.get(cellKey(e));
+    if (!c || c.n < MIN_CELL || !c.out) continue;
+    expected += (e[5][mi.output_tokens] || 0) * c.gen / c.out;
+    actual += e[8];
+  }
+  return {change: actual && expected ? expected / actual - 1 : NaN, coverage: all ? actual / all : 0, expected, actual};
+}
+
+// The day that best splits a series of daily speed indices into two levels: largest Welch-style t on log values,
+// at least three days on each side. Returns null without a clear (> 10%) step.
+export function changePoint(days, minSide = 3) {
+  const xs = days.filter(d => d.value > 0).map(d => ({t: d.t, y: Math.log(d.value)}));
+  let best = null;
+  for (let k = minSide; k <= xs.length - minSide; k++) {
+    const a = xs.slice(0, k).map(d => d.y), b = xs.slice(k).map(d => d.y);
+    const ma = a.reduce((s, y) => s + y, 0) / a.length, mb = b.reduce((s, y) => s + y, 0) / b.length;
+    const va = a.reduce((s, y) => s + (y - ma) ** 2, 0) / Math.max(1, a.length - 1), vb = b.reduce((s, y) => s + (y - mb) ** 2, 0) / Math.max(1, b.length - 1);
+    const t = Math.abs(mb - ma) / Math.sqrt(va / a.length + vb / b.length || 1e-9);
+    if (!best || t > best.score) best = {t: xs[k].t, score: t, change: Math.exp(mb - ma) - 1};
+  }
+  return best && best.score >= 3 && Math.abs(best.change) >= .1 ? best : null;
+}
+
+// Every clear step in time order, by binary segmentation: split at the clearest step, then look again on each side.
+export function changePoints(days, minSide = 3) {
+  const xs = days.filter(d => d.value > 0), best = changePoint(xs, minSide);
+  if (!best) return [];
+  const k = xs.findIndex(d => d.t === best.t);
+  return [...changePoints(xs.slice(0, k), minSide), best, ...changePoints(xs.slice(k), minSide)];
+}
+
+// ---------- secondary work running while a main session waits ----------
+// Merged busy spans [start, end] of the turns of review or subagent sessions.
+export function unionSpans(list) {
+  const sorted = [...list].sort((p, q) => p[0] - q[0]), s = [], e = [];
+  for (const [a, b] of sorted) {
+    if (s.length && a <= e[e.length - 1]) e[e.length - 1] = Math.max(e[e.length - 1], b);
+    else { s.push(a); e.push(b); }
+  }
+  return {s, e};
+}
+
+// Seconds of [a, b] covered by a union of spans.
+export function overlap(u, a, b) {
+  let lo = 0, hi = u.e.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (u.e[mid] <= a) lo = mid + 1; else hi = mid; }
+  let n = 0;
+  for (let i = lo; i < u.s.length && u.s[i] < b; i++) n += Math.min(u.e[i], b) - Math.max(u.s[i], a);
+  return n;
+}
+
+function busySpans() {
+  const D = ctx.D;
+  if (!D.busy) {
+    const spans = {review: [], subagent: []};
+    for (const t of D.turns || []) { const kind = sessionKind(D.sessions[t[2]]); if (spans[kind]) spans[kind].push([t[0], t[0] + t[1]]); }
+    D.busy = {review: unionSpans(spans.review), subagent: unionSpans(spans.subagent)};
+  }
+  return D.busy;
+}
+
+// Turns of main sessions with at least one response in `events`, their wall-clock time split into PARTS. The
+// tool phase of a response counts as auto-review or subagent time where such a session was busy meanwhile.
+export function turnBreakdown(events, mi) {
+  const D = ctx.D, spans = busySpans(), turns = new Map();
+  for (const e of events) {
+    const ti = e[11];
+    if (ti == null || ti < 0 || sessionKind(D.sessions[e[3]]) !== 'main') continue;
+    let t = turns.get(ti);
+    if (!t) {
+      const r = D.turns[ti];
+      turns.set(ti, t = {i: ti, start: r[0], duration: r[1], session: r[2], ttft: r[3], aborted: !!r[4], out: 0, tokens: 0, responses: 0, models: new Map()});
+      for (const p of PARTS) t[p.key] = 0;
+    }
+    t.out += e[5][mi.output_tokens] || 0; t.tokens += e[5][mi.total_tokens] || 0; t.responses++;
+    t.models.set(e[1], (t.models.get(e[1]) || 0) + 1);
+    if (e[8] != null) t[e[10] ? 'compaction' : 'model'] += e[8];
+    const wait = e[9] || 0;
+    if (wait > 0) {
+      const review = Math.min(wait, overlap(spans.review, e[0] - wait, e[0]));
+      const sub = Math.min(wait - review, overlap(spans.subagent, e[0] - wait, e[0]));
+      t.review += review; t.subagent += sub; t.tools += wait - review - sub;
+    }
+  }
+  for (const t of turns.values()) {
+    const known = t.model + t.compaction + t.review + t.subagent + t.tools;
+    t.total = Math.max(t.duration, known);
+    t.other = t.total - known;
+    t.mainModel = [...t.models].sort((p, q) => q[1] - p[1])[0][0];
+  }
+  return [...turns.values()];
+}
+
+export function pool(turns) {
+  const p = {n: turns.length, total: 0, out: 0, tokens: 0, responses: 0};
+  for (const k of PARTS) p[k.key] = 0;
+  for (const t of turns) {
+    p.total += t.total; p.out += t.out; p.tokens += t.tokens; p.responses += t.responses;
+    for (const k of PARTS) p[k.key] += t[k.key];
+  }
+  return p;
 }
 
 // ---------- quota pace and forecast ----------

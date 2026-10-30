@@ -9,6 +9,7 @@ import json
 import math
 import os
 import pickle
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -29,6 +30,7 @@ class History:
     sessions: dict[str, dict] = field(default_factory=dict)
     thread_names: dict[str, str] = field(default_factory=dict)
     skipped: list[dict] = field(default_factory=list)
+    turns: list[dict] = field(default_factory=list)
     files: int = 0
     cached_files: int = 0
 
@@ -130,17 +132,55 @@ def source_kind(source) -> str:
     return str(source or "unknown")
 
 
+# Response items the model writes; everything else in a response_item line is input sent to it.
+MODEL_OUTPUT = {"reasoning", "function_call", "custom_tool_call", "local_shell_call", "web_search_call",
+                "tool_search_call", "image_generation_call"}
+RESPONSE_HEAD = re.compile(rb'^\{"timestamp":"([^"]+)"(?:,"ordinal":\d+)?,"type":"response_item","payload":\{"type":"([a-z_]+)"')
+ROLE = re.compile(rb'"role":"([a-z]+)"')
+MAX_GENERATION = 3600
+
+
+def response_head(line: bytes) -> tuple[float, str, str | None] | None:
+    """Timestamp, item type and role of a response_item line without decoding its (often large) body."""
+    match = RESPONSE_HEAD.match(line)
+    if match:
+        role = ROLE.search(line, 0, 400) if match.group(2) == b"message" else None
+        return timestamp(match.group(1).decode()), match.group(2).decode(), role.group(1).decode() if role else None
+    record = json.loads(line)
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    return timestamp(record["timestamp"]), str(payload.get("type") or ""), payload.get("role")
+
+
 def parse_file(path: Path) -> dict:
-    """Read one session file. Pure function of the file contents, so its result can be cached."""
+    """Read one session file. Pure function of the file contents, so its result can be cached.
+
+    Timing: a response is generated from the moment its input is complete (turn start, the last tool output
+    or the previous token count) until the usage record, or else its last output item. The time from there
+    to its token count is spent running the tools it called. Only responses inside a recorded turn are timed.
+    """
     model, source, effort, previous = "unknown", None, None, None
-    events, snapshots, notes = [], [], []
+    events, snapshots, notes, turns = [], [], [], []
     counters = Counter()
     meta = {"id": None, "cwd": None, "originator": None, "cli_version": None, "branch": None,
             "source": "unknown", "parent": None, "started": None}
-    markers = [b'"token_count"', b'"turn_context"', b'"session_meta"']
+    markers = [b'"token_count"', b'"turn_context"', b'"session_meta"', b'"response_item"', b'"token_usage_record"',
+               b'"task_started"', b'"task_complete"', b'"turn_aborted"', b'"compacted"']
+    turn = ready = done = last_out = None
+    waiting, compaction = True, False
     with open_lines(path) as stream:
         for lineno, line in enumerate(stream, 1):
             if not any(marker in line for marker in markers):
+                continue
+            if b'"type":"response_item"' in line[:120]:
+                try:
+                    ts, item, role = response_head(line)
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    notes.append(("invalid_record", lineno))
+                    continue
+                if item in MODEL_OUTPUT or (item == "message" and role == "assistant"):
+                    waiting, last_out = False, ts
+                elif waiting and turn is not None and (item.endswith("_output") or item == "message"):
+                    ready = ts
                 continue
             try:
                 record = json.loads(line)
@@ -152,6 +192,27 @@ def parse_file(path: Path) -> dict:
             if not isinstance(payload, dict):
                 continue
             kind = record.get("type")
+            if kind == "token_usage_record":
+                done = ts
+                continue
+            if kind == "compacted":
+                compaction = True
+                continue
+            step = payload.get("type") if kind == "event_msg" else None
+            if step == "task_started":
+                turn = ready = ts
+                done = last_out = None
+                waiting, compaction = True, False
+                continue
+            if step in ("task_complete", "turn_aborted"):
+                if turn is not None:
+                    duration = payload.get("duration_ms")
+                    end = turn + duration / 1000 if isinstance(duration, (int, float)) and duration >= 0 else ts
+                    first = payload.get("time_to_first_token_ms")
+                    turns.append({"start": turn, "end": max(turn, end), "aborted": step == "turn_aborted",
+                                  "ttft": first / 1000 if isinstance(first, (int, float)) and first >= 0 else None})
+                turn = ready = None
+                continue
             if kind == "session_meta":
                 source = payload.get("source")
                 if meta["id"] is None:
@@ -204,6 +265,13 @@ def parse_file(path: Path) -> dict:
             if total == previous:
                 counters["unchanged_usage"] += 1
                 continue
+            generation = tools = None
+            if turn is not None and ready is not None:
+                end = done if done is not None else last_out if last_out is not None else ts
+                if ready <= end <= ready + MAX_GENERATION:
+                    generation, tools = end - ready, max(0.0, ts - end)
+            was_compaction = compaction
+            ready, done, last_out, waiting, compaction = ts, None, None, True, False
             if previous is None:
                 counts = dict(last)
                 if not last:
@@ -227,11 +295,12 @@ def parse_file(path: Path) -> dict:
                                          "effort": str(effort) if effort else None,
                                          "context": last.get("input_tokens", 0) if isinstance(context, (int, float)) else None,
                                          "context_window": context if isinstance(context, (int, float)) else None,
+                                         "generation": generation, "tools": tools, "compaction": was_compaction,
                                          "counts": counts, "file": path.name, "line": lineno}))
     if meta["id"] is None:
         stem = path.name.split(".jsonl")[0]
         meta["id"] = stem[-36:] if len(stem) >= 36 else stem
-    return {"events": events, "snapshots": snapshots, "notes": notes, "counters": dict(counters), "meta": meta}
+    return {"events": events, "snapshots": snapshots, "turns": turns, "notes": notes, "counters": dict(counters), "meta": meta}
 
 
 STATE_DIR = Path(os.environ.get("CODEX_USAGE_STATE", "~/.cache/codex_usage")).expanduser()
@@ -251,7 +320,7 @@ def cache_location(home: Path) -> Path:
 class FileCache:
     """Parsed session files keyed by path, size and mtime; active sessions are re-read only when they change."""
 
-    VERSION = 3
+    VERSION = 4
 
     def __init__(self, location: Path | None = None):
         self.location = location
@@ -296,6 +365,7 @@ def load_history(home: Path, *, skip_unreadable: bool = False,
     if not files:
         raise ValueError(f"In {home} has no session files in sessions/ or archived_sessions/")
     seen_events = set()
+    seen_turns = set()
     snapshots = {}
     reused = 0
     parsed_files: dict[Path, dict | Exception] = {}
@@ -361,6 +431,12 @@ def load_history(home: Path, *, skip_unreadable: bool = False,
             key = tuple(snap[k] for k in ["ts", "limit_id", "minutes", "used", "reset"])
             if key not in snapshots or (snapshots[key]["internal"] and not snap["internal"]):
                 snapshots[key] = snap
+        for turn in parsed["turns"]:
+            # A forked session repeats the turns of its parent; the first file that has one keeps it.
+            key = (round(turn["start"], 3), round(turn["end"], 3))
+            if key not in seen_turns:
+                seen_turns.add(key)
+                history.turns.append(dict(turn, session=meta["id"]))
         for fingerprint, original in parsed["events"]:
             if fingerprint in seen_events:
                 history.diagnostics["duplicate_history_event"] += 1
@@ -393,6 +469,7 @@ def load_history(home: Path, *, skip_unreadable: bool = False,
     if cache:
         cache.prune({str(path) for path in files})
     history.events.sort(key=lambda r: r["ts"])
+    history.turns.sort(key=lambda r: r["start"])
     history.snapshots = sorted(snapshots.values(), key=lambda r: r["ts"])
     history.cached_files = reused
     load_auxiliary(home, history)

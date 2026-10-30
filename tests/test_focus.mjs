@@ -109,3 +109,57 @@ console.log('forecast, context and attribution checks passed');
   assert.equal(core.workRates({input_tokens: 10}, 0).total, null, 'no usage, no rate');
 }
 console.log('context window and work-rate checks passed');
+// Task speed: like-for-like index by model × context size, change point, busy-span overlap, per-task breakdown.
+{
+  const mi = {output_tokens: 0, total_tokens: 1};
+  // ev(ts, model, context, output, generation, tools, compaction, turn)
+  const ev = (ts, model, ctx, out, gen, tools = 0, comp = 0, turn = -1, session = 0) => [ts, model, 0, session, 0, [out, out], ctx, 0, gen, tools, comp, turn];
+  const before = [], after = [];
+  for (let i = 0; i < 20; i++) before.push(ev(i, 0, 20e3, 400, 10), ev(i, 0, 200e3, 400, 20));
+  // Later: the same cells at the same speed, but the mix moves to the slow large-context cell.
+  for (let i = 0; i < 20; i++) after.push(ev(100 + i, 0, 200e3, 400, 20));
+  close(core.genSpeed(before, mi).speed, 800 / 30, 1e-9, 'pooled speed');
+  close(core.genSpeed(after, mi).speed, 20, 1e-9, 'pooled speed drops with a bigger context');
+  close(core.speedIndex(before, after, mi).change, 0, 1e-9, 'like for like: no slower inference');
+  const slower = after.map(e => { const x = [...e]; x[8] = 25; return x; });
+  close(core.speedIndex(before, slower, mi).change, 20 / 25 - 1, 1e-9, 'like for like: 20% slower');
+  const other = [ev(200, 1, 20e3, 400, 5)];
+  assert.equal(core.speedIndex(before, other, mi).coverage, 0, 'a model without a baseline is not compared');
+  assert(core.genSpeed([ev(0, 0, 0, 400, 30, 0, 1)], mi).speed == null, 'compaction calls are not timed');
+
+  const days = Array.from({length: 12}, (_, i) => ({t: i, value: (i < 7 ? 1 : .7) * (1 + (i % 3 - 1) * .02)}));
+  const cp = core.changePoint(days);
+  assert.equal(cp.t, 7, 'step detected on its first day');
+  close(cp.change, -.3, .02, 'size of the step');
+  assert.equal(core.changePoint(days.map(d => ({...d, value: 1 + (d.t % 3 - 1) * .02}))), null, 'flat series: no step');
+
+  const u = core.unionSpans([[10, 20], [15, 30], [40, 50]]);
+  assert.deepEqual([u.s, u.e], [[10, 40], [30, 50]], 'overlapping spans merge');
+  assert.equal(core.overlap(u, 0, 100), 30);
+  assert.equal(core.overlap(u, 25, 45), 10);
+  assert.equal(core.overlap(u, 31, 39), 0);
+
+  // Task 0 runs 0–100 s: generation 0–20, tools 20–60 (auto-review busy 30–36), generation 60–75, tools 75–95
+  // (a subagent busy 70–90), compaction 95–99. Task 3 runs 200–210 with one response.
+  core.ctx.D = {
+    sessions: [{source: 'cli'}, {source: 'review'}, {source: 'subagent'}],
+    turns: [[0, 100, 0, 2, 0], [30, 6, 1, null, 0], [70, 20, 2, null, 0], [200, 10, 0, 1, 0]], // [start, duration, session, ttft, aborted]
+  };
+  const main = [ev(60, 0, 1e3, 300, 20, 40, 0, 0), ev(95, 0, 1e3, 200, 15, 20, 0, 0), ev(99, 0, 1e3, 0, 4, 0, 1, 0), ev(209, 0, 1e3, 100, 8, 0, 0, 3)];
+  const side = [ev(36, 0, 1e3, 50, 5, 0, 0, 1, 1), ev(90, 0, 1e3, 50, 18, 0, 0, 2, 2)];
+  const turns = core.turnBreakdown([...main, ...side], mi);
+  assert.deepEqual(turns.map(x => x.i), [0, 3], 'only turns of main sessions are tasks');
+  const t = turns[0];
+  assert.deepEqual([t.model, t.compaction, t.review, t.subagent, t.tools, t.other, t.total], [35, 4, 6, 15, 39, 1, 100]);
+  assert.equal(t.out, 500);
+  const p = core.pool(turns);
+  assert.deepEqual([p.n, p.model, p.other, p.total], [2, 43, 3, 110]);
+}
+console.log('task speed checks passed');
+// Binary segmentation finds both steps of a speed series that rose and then fell.
+{
+  const days = Array.from({length: 24}, (_, i) => ({t: i, value: (i < 8 ? 1 : i < 16 ? 1.5 : 1.05) * (1 + (i % 3 - 1) * .02)}));
+  assert.deepEqual(core.changePoints(days).map(st => st.t), [8, 16], 'a rise, then a fall');
+  assert(core.changePoints(days).at(-1).change < -.2, 'the latest step is the fall');
+}
+console.log('change point checks passed');

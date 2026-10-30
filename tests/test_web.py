@@ -85,6 +85,56 @@ class DatasetTests(unittest.TestCase):
             self.assertEqual([(q["minutes"], q["used"]) for q in quota_now(history)], [(300, 9)])
 
 
+class TimingTests(unittest.TestCase):
+    def test_responses_are_timed_inside_turns(self):
+        def rec(seconds, kind, payload, compact=False):
+            record = {"timestamp": iso(seconds), "type": kind, "payload": payload}
+            return json.dumps(record, separators=(",", ":")) if compact else json.dumps(record)
+
+        def usage(seconds, total):
+            return rec(seconds, "event_msg", {"type": "token_count", "info": {
+                "total_token_usage": {"input_tokens": total, "output_tokens": total // 10, "total_tokens": total + total // 10},
+                "last_token_usage": {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110}}})
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / "sessions" / "2026" / "09" / "01" / "rollout-t.jsonl"
+            path.parent.mkdir(parents=True)
+            lines = [
+                rec(0, "session_meta", {"id": "t", "cwd": "/work/demo", "source": "cli"}),
+                rec(0, "turn_context", {"model": "demo-model"}),
+                usage(5, 900),  # before any turn: not timed
+                rec(100, "event_msg", {"type": "task_started", "turn_id": "x"}),
+                rec(101, "response_item", {"type": "message", "role": "user", "content": []}, compact=True),
+                rec(104, "response_item", {"type": "reasoning", "summary": []}, compact=True),
+                rec(110, "response_item", {"type": "function_call", "name": "exec", "arguments": "{}"}),
+                rec(111, "token_usage_record", {"usage": {}}),
+                rec(130, "response_item", {"type": "function_call_output", "output": "x" * 5000}, compact=True),
+                usage(130.5, 1000),  # generation 101 → 111, tools 111 → 130.5
+                rec(140, "response_item", {"type": "message", "role": "assistant", "content": []}, compact=True),
+                usage(141, 1100),  # no usage record: generation ends at the last output item, 130.5 → 140
+                rec(171, "token_usage_record", {"usage": {}}),
+                rec(171.2, "compacted", {"message": ""}),
+                usage(171.3, 1200),  # a compaction call, 141 → 171
+                rec(175, "event_msg", {"type": "task_complete", "duration_ms": 75500, "time_to_first_token_ms": 2500}),
+            ]
+            path.write_text("\n".join(lines) + "\n")
+            history = load_history(root)
+            timed = [(e["generation"], e["tools"], e["compaction"]) for e in history.events]
+            self.assertEqual(timed[0], (None, None, False))
+            for (gen, tools, compaction), expected in zip(timed[1:], [(10, 19.5, False), (9.5, 1, False), (30, .3, True)]):
+                self.assertAlmostEqual(gen, expected[0], places=2)
+                self.assertAlmostEqual(tools, expected[1], places=2)
+                self.assertEqual(compaction, expected[2])
+            self.assertEqual(len(history.turns), 1)
+            self.assertAlmostEqual(history.turns[0]["end"] - history.turns[0]["start"], 75.5, places=2)
+            self.assertEqual(history.turns[0]["ttft"], 2.5)
+            data = build_dataset(history, {"path": str(root)})
+            self.assertEqual([row[11] for row in data["events"]], [-1, 0, 0, 0], "each timed response points at its turn")
+            self.assertEqual([row[10] for row in data["events"]], [0, 0, 0, 1])
+            self.assertEqual(data["turns"], [[100.0, 75.5, 0, 2.5, 0]])
+
+
 class ServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -147,7 +147,7 @@ input[type=checkbox] { accent-color: var(--ink); width: 14px; height: 14px; marg
 
 /* ---------- icons ---------- */
 /* Alpha masks generated for this app; they take the current text colour in both themes. */
-.ico { --s: 16px; --n: 24; display: inline-block; flex: none; width: var(--s); height: var(--s); background: currentColor;
+.ico { --s: 16px; --n: 25; display: inline-block; flex: none; width: var(--s); height: var(--s); background: currentColor;
   -webkit-mask: url(/static/img/icons.png) no-repeat; mask: url(/static/img/icons.png) no-repeat;
   -webkit-mask-size: calc(var(--s) * var(--n)) var(--s); mask-size: calc(var(--s) * var(--n)) var(--s);
   -webkit-mask-position: calc(var(--i) * var(--s) * -1) 0; mask-position: calc(var(--i) * var(--s) * -1) 0; }

@@ -93,6 +93,14 @@ Did the quota really get more generous, or is more of it spent re-reading contex
 
 The headline flags **Looks more generous, less work fits** when total tokens per 1% rise while fresh work (uncached input + output) or output per 1% fall. Charts index every measure to the period before the split, show what one percent buys, plot every quota window, and track context per response, cached tokens re-read per output token, and compactions per 100 responses. A cost-weighted measure counts uncached input, cached input, and output with selectable weights (default 1 : 0.1 : 8, typical API price ratios); it is an estimate of relative cost, not a price. **Quota watch** also lists context-window changes and warns when a capacity increase in total tokens comes with less fresh work.
 
+### Task speed
+
+Are tasks slower because the model generates more slowly, or because more of each task goes to secondary work? Every response is timed from the moment its input is complete (the user message, the last tool output, or the previous response) until the model returns its usage; the time until the next response starts is spent running the tools it called. A task is one turn of a main session, and its wall-clock time is split into model generation, compaction, auto-review, subagents, tools (including commands and approvals), and other time. Tool time counts as auto-review or subagent time while such a session was busy.
+
+Generation speed is output tokens per second of generation. Because a longer uncached context makes every response start more slowly, changes are measured **like for like**: the later responses are compared with the earlier speed of the same model and context size, so a bigger context or a switch to another model does not look like slower inference. The page splits the range at the latest step in daily like-for-like speed and compares it with the level since the step before it (or at a date you choose), shows speed per model and by context size, time to first token, where task time goes, a waterfall of why the average task changed (speed, output, compaction, auto-review, subagents, tools, other), and a project table with speed, time shares, effective speed (output per second of task time) and token burn (tokens per minute of task time). The overview shows generation speed as a key figure and **Projects** shows speed and median task time per project.
+
+Timing needs turn records (`task_started` / `task_complete`), which Codex writes in recent versions; older histories show no timing.
+
 ### Spend anatomy
 
 What is your usage made of? A pivot table splits usage by any two of model, context size, reasoning effort, project, session type, weekday, hour, or period; click a cell to list the sessions behind it. A waterfall splits the change against the previous period into more responses, larger context, and more output.

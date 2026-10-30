@@ -1,10 +1,11 @@
 // Analysis pages: overview, quota windows, models, sessions, projects.
 import {locales, h, fill, num, compact, pct, share, duration, ago, quotaName, minutesLabel, median, projectName, projectKey, shortPath, plural} from './util.js';
 import {columns, lines, quotaChart, timeColumns, barList, composition, legend, hideTip, rankList, miniColumns, sparkline} from './charts.js';
-import {ctx, state, saveState, view, sum, byModel, sessionStats, projectStats, granularity, bucketer, buckets, granLabels,
+import {ctx, state, saveState, view, sum, byModel, sessionStats, projectStats, granularity, bucketer, buckets, granLabels, turnBreakdown, genSpeed,
   card, tile, chartBox, segmented, table, color, modelName, modelDot, metricLabel, metricUnit, sourceNames, sessionKind, info, select, quotaForecast,
   eventsBetween, period, periodStart, quotaBurn} from './core.js';
 import {signals} from './focus.js';
+import {speedTile} from './speed.js';
 
 const weekdayFormat = new Intl.DateTimeFormat(locales, {weekday: 'short', timeZone: 'UTC'});
 const WEEKDAYS = Array.from({length: 7}, (_, day) => weekdayFormat.format(new Date(Date.UTC(2024, 0, 1 + day))));
@@ -142,7 +143,8 @@ export function overview() {
     tile('Per active day', fmtMetric(activeDays ? total / activeDays : 0), `${activeDays} of ${v.days} days active`, {spark: spark(dayTotal.map(x => x || null))}),
     tile('Sessions', num(mainSessions), `+ ${num(stats.size - mainSessions)} subagents and reviews`, {spark: spark(daySessions.map(x => x.size))}),
     tile('Responses', num(v.events.length), `≈ ${compact(v.events.length ? allTokens / v.events.length : 0)} tokens each`, {spark: spark(dayResp)}),
-    tile('Input from cache', share(cached, inp, 0), `${compact(cached)} of ${compact(inp)}`, {spark: spark(dayIn.map((x, i) => x ? dayCached[i] / x : null))}));
+    tile('Input from cache', share(cached, inp, 0), `${compact(cached)} of ${compact(inp)}`, {spark: spark(dayIn.map((x, i) => x ? dayCached[i] / x : null))}),
+    speedTile(v, n));
 
   // ---------- main chart ----------
   const gran = granularity(v), key = bucketer(gran), bs = buckets(v, gran);
@@ -524,6 +526,16 @@ export function projectsPage() {
   const projects = projectStats(stats);
   const total = projects.reduce((n, p) => n + p.value, 0);
   const open = p => { state.project = p.key; state.sessions.kind = 'all'; saveState(); ctx.go('sessions'); };
+  // Generation speed and task time per project (see Task speed).
+  const timing = new Map();
+  const timingOf = key => { let t = timing.get(key); if (!t) timing.set(key, t = {events: [], tasks: []}); return t; };
+  for (const e of v.events) if (e[8] != null) timingOf(D.sessionProject[e[3]]).events.push(e);
+  for (const t of turnBreakdown(v.events, D.mi)) timingOf(D.sessionProject[t.session]).tasks.push(t);
+  for (const p of projects) {
+    const t = timing.get(p.key);
+    p.speed = t ? genSpeed(t.events, D.mi).speed : null;
+    p.task = t?.tasks.length ? median(t.tasks.map(x => x.total)) : null;
+  }
   return [
     card('Usage by project', {sub: 'Projects are session working directories. Subagents and reviews are assigned to their own directories.'},
       chartBox(el => barList(el, projects.map(p => ({label: p.name, sub: projectSub(p), value: p.value, key: p.key, title: [...p.paths].join('\n')})), {fmt: fmtMetric, max: 15, onClick: open}))),
@@ -533,6 +545,8 @@ export function projectsPage() {
       {key: 'share', label: 'Share', num: true, value: p => total ? p.value / total : 0, fmt: x => pct(x * 100, 1)},
       {key: 'sessions', label: 'Sessions', num: true, value: p => p.sessions},
       {key: 'responses', label: 'Responses', num: true, value: p => p.responses},
+      {key: 'speed', label: 'Speed', num: true, value: p => p.speed, fmt: x => `${num(x, x < 10 ? 1 : 0)} tok/s`, title: 'Output tokens per second of generation'},
+      {key: 'task', label: 'Median task', num: true, value: p => p.task, fmt: x => x < 60 ? `${num(x, x < 10 ? 1 : 0)} s` : duration(x), title: 'Median wall-clock time of a turn'},
       {key: 'models', label: 'Models', value: p => [...p.models.keys()].length, render: p => h('span', {class: 'dots'}, [...p.models.entries()].sort((a, b) => b[1] - a[1]).map(([m]) =>
         h('i', {class: 'swatch', title: D.models[m], style: {background: color(D.models[m])}})))},
       {key: 'last', label: 'Last activity', value: p => p.last, render: p => c.dateTime(p.last)},

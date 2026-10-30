@@ -114,7 +114,9 @@ class DemoTests(unittest.TestCase):
         self.assertTrue(any(w['full'] and not w['exclusion'] for w in windows))
         self.assertGreater(len(history.sessions), 30)
         self.assertTrue(all(s['cwd'].startswith('/home/demo/projects/') for s in history.sessions.values()))
-        self.assertEqual({e['model'] for e in history.events}, {'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'})
+        self.assertEqual({e['model'] for e in history.events if not e['internal']}, {'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna'})
+        self.assertEqual({e['model'] for e in history.events if e['internal']}, {'codex-auto-review'})
+        self.assertTrue(history.turns and all(t['session'] in history.sessions for t in history.turns))
 
     def test_demo_build_never_discovers_real_profiles_or_sends_requests(self):
         with tempfile.TemporaryDirectory() as folder:

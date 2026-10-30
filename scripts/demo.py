@@ -55,6 +55,9 @@ def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
     # Twelve days ago the models start reporting a larger default context window: context grows further
     # before a compaction, so each step re-reads more cached context and fewer steps fit into the quota.
     window_change = midnight - 12 * 86400
+    # Nine days ago the main model starts generating more slowly; tool time and auto-review stay as they were.
+    slowdown = midnight - 9 * 86400
+    speeds = {"gpt-6.1-sol": 58, "gpt-6-astra": 46, "gpt-6-luna": 92}
     for i, start in enumerate(starts):
         model = rng.choices(models, weights=[.6, .25, .15])[0]
         sid = f"demo-{seed:02d}-session-{i:03d}"
@@ -77,12 +80,19 @@ def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
         # The quota is drawn by cost: cached input is cheap, output expensive, so a response with a
         # longer context uses more of it and the window fills in fewer steps.
         per_pct = rng.uniform(46000, 58000) * scale * weight
-        interval = window_span / rng.randint(90, 130)
-        spent = 0.0
+        speed = speeds[model] * (.68 if model == "gpt-6.1-sol" and start >= slowdown else 1)
+        spent, ts, turn_left, turn_start = 0.0, start, 0, None
         for step in range(400):
-            if spent >= peak or step * interval > 17000:
+            if spent >= peak or ts - start > 17000 or ts > now - 60:
                 break
-            ts = start + step * interval
+            if not turn_left:
+                if turn_start is not None:
+                    history.turns.append({"start": turn_start, "end": ts + rng.uniform(.2, 1.5), "ttft": ttft,
+                                          "aborted": False, "session": sid})
+                    ts += rng.uniform(20, 240)  # the user reads and writes the next message
+                turn_left, turn_start = rng.randint(4, 16), ts
+                ttft = rng.uniform(1.2, 2.6) * (1.3 if speed < speeds[model] else 1)
+            turn_left -= 1
             added = int(rng.randint(1500, 4200) * weight * scale)
             context += added
             if context > context_window * .8:
@@ -92,8 +102,25 @@ def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
             out = int(rng.randint(1800, 6500) * scale)
             cached = max(0, inp - added - int(rng.uniform(.01, .08) * inp))
             spent = min(peak, spent + ((inp - cached) + cached * .1 + out * 8) / per_pct)
+            compaction = added == context
+            # Generation: prefill of the uncached input, then output at the model's speed.
+            generation = (rng.uniform(15, 40) if compaction else (inp - cached) / 9000 + out / (speed * rng.uniform(.85, 1.15)))
+            tools = 0 if compaction or not turn_left else rng.choice([rng.uniform(.3, 4), rng.uniform(2, 15), rng.uniform(10, 60)])
+            ts += generation + tools
+            if tools > 4 and rng.random() < .3:
+                # The auto-reviewer checks a command before it runs; its own session is busy meanwhile.
+                review = f"{sid}-review"
+                review_gen = min(tools - .5, rng.uniform(2, 8))
+                history.sessions.setdefault(review, {**history.sessions[sid], "id": review, "source": "review", "parent": None,
+                                                     "file": f"/home/demo/.codex-demo/sessions/rollout-{review}.jsonl"})
+                history.turns.append({"start": ts - tools + .2, "end": ts - tools + .4 + review_gen, "ttft": None, "aborted": False, "session": review})
+                history.events.append({"ts": ts - tools + .3 + review_gen, "model": "codex-auto-review", "session": review, "internal": True,
+                                       "effort": "low", "context": 12000, "context_window": 272000, "file": "synthetic.jsonl", "line": 1,
+                                       "generation": review_gen, "tools": 0.0, "compaction": False,
+                                       "counts": {"input_tokens": 12000, "cached_input_tokens": 8000, "uncached_input_tokens": 4000,
+                                                  "output_tokens": 120, "reasoning_output_tokens": 60, "total_tokens": 12120, "responses": 1}})
             history.events.append({"ts": ts, "model": model, "session": sid, "internal": False,
-                                   "effort": effort, "context": inp,
+                                   "effort": effort, "context": inp, "generation": generation, "tools": tools, "compaction": compaction,
                                    "context_window": context_window, "file": "synthetic.jsonl", "line": step + 1,
                                    "counts": {"input_tokens": inp, "output_tokens": out, "total_tokens": inp + out,
                                               "cached_input_tokens": cached, "uncached_input_tokens": inp - cached,
@@ -107,14 +134,19 @@ def synthetic_history(now: float, seed: int = 7, plan: str = "Pro") -> History:
             history.snapshots.append({"ts": ts, "model": model, "internal": False, "limit_id": "codex",
                                       "minutes": 10080, "reset": week_start + 7 * 86400, "used": round(used, 1),
                                       "plan": plan, "file": "synthetic.jsonl", "line": step + 1})
+        if turn_start is not None:
+            history.turns.append({"start": turn_start, "end": ts + .5, "ttft": ttft, "aborted": False, "session": sid})
         if i % 5 == 0:
             child = sid + "-agent"
             history.sessions[child] = {**history.sessions[sid], "id": child, "source": "subagent", "parent": sid,
                                        "file": f"/home/demo/.codex-demo/sessions/rollout-{child}.jsonl"}
             history.thread_names[child] = "Check accessibility and tests"
+            history.turns.append({"start": start + 1800 - 120, "end": start + 1800 + 7 * 150 + 2, "ttft": 1.6, "aborted": False, "session": child})
             for step in range(8):
+                generation = rng.uniform(45, 100) / (1.4 if speed < speeds[model] else 1)
                 history.events.append({"ts": start + 1800 + step * 150, "model": model, "session": child,
                                        "internal": False, "effort": "medium", "context": 40000 + step * 2500,
+                                       "generation": generation, "tools": 150 - generation - 2 if step else 120 - generation, "compaction": False,
                                        "context_window": 524288 if start >= window_change else 262144, "file": "synthetic.jsonl", "line": step + 1,
                                        "counts": {"input_tokens": 45000, "cached_input_tokens": 30000,
                                                   "uncached_input_tokens": 15000, "output_tokens": 2500,

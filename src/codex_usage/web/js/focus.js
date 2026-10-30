@@ -11,6 +11,7 @@ import {sessionDetail, sessionTitle, windowDetail, toggleProject, toggleModel} f
 import {contextLine} from './context.js';
 import {budgetLine} from './budget.js';
 import {workLine} from './work.js';
+import {speedLine} from './speed.js';
 
 const fmtMetric = v => state.metric === 'responses' ? num(v) : compact(v);
 const signed = (v, digits = 0) => (v > 0 ? '+' : v < 0 ? '−' : '±') + num(Math.abs(v), digits);
@@ -632,6 +633,7 @@ export function signals() {
     {page: 'review', i: 0, title: 'Review this week', line: `${fmtMetric(tw)} so far · ${lw ? changeText(change(tw, lw)) + ' vs last week' : 'no data last week'}`},
     {page: 'watch', i: 1, title: 'Watch quota capacity', line: watchLine},
     {page: 'work', i: 12, title: 'Check work per quota', line: workLine()},
+    {page: 'speed', i: 24, title: 'Check task speed', line: speedLine()},
     {page: 'anatomy', i: 2, title: 'Break down the spend', line: `${share(big, sum(v.events, D.mi.total_tokens), 0)} of tokens at ≥ 128K context`},
     {page: 'context', i: 16, title: 'Trace context growth', line: contextLine()},
   ];
